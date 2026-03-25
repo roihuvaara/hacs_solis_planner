@@ -187,7 +187,9 @@ def build_load_forecast_for_periods(
         base_prediction = None
         if baseline_candidates:
             baseline_bucket_count += 1
-            if future_temperature is not None:
+            if future_temperature is not None and any(
+                pair.temperature_c is not None for pair in baseline_candidates
+            ):
                 weather_adjusted_bucket_count += 1
             base_prediction = _predict_load(baseline_candidates, future_temperature)
 
