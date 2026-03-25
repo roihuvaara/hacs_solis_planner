@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from .core import UsageBucket
 
@@ -52,8 +53,40 @@ def encode_usage_buckets(buckets: list[UsageBucket]) -> str:
     )
 
 
-def decode_usage_buckets(payload: str) -> list[UsageBucket]:
-    raw_buckets = json.loads(payload or "[]")
+def _expand_numeric_profile(values: list[float]) -> list[UsageBucket]:
+    if len(values) == 24:
+        expanded = [hourly_value / 4.0 for hourly_value in values for _ in range(4)]
+    elif len(values) == 96:
+        expanded = values
+    else:
+        raise ValueError("rolling_usage_7d must contain 24 hourly values or 96 quarter-hour values")
+
+    return [
+        UsageBucket(
+            start_minute_of_day=index * 15,
+            avg_kwh_per_15m=round(float(value), 4),
+        )
+        for index, value in enumerate(expanded)
+    ]
+
+
+def _load_usage_payload(payload: str | list[Any]) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+
+    raw_payload = (payload or "").strip()
+    if not raw_payload:
+        return []
+    if raw_payload.startswith("["):
+        return json.loads(raw_payload)
+    return [float(part) for part in raw_payload.split(",") if part]
+
+
+def decode_usage_buckets(payload: str | list[Any]) -> list[UsageBucket]:
+    raw_buckets = _load_usage_payload(payload)
+    if raw_buckets and not isinstance(raw_buckets[0], dict):
+        return _expand_numeric_profile([float(item) for item in raw_buckets])
+
     return [
         UsageBucket(
             start_minute_of_day=int(item["start_minute_of_day"]),

@@ -54,6 +54,13 @@ def build_usage_profile(default_kwh: float = 0.15) -> str:
     return json.dumps(buckets)
 
 
+def build_compact_hourly_usage_profile(default_kwh_per_hour: float = 0.6) -> str:
+    values = [default_kwh_per_hour] * 24
+    for index in range(6, 10):
+        values[index] = 1.4
+    return ",".join(f"{value:.3f}" for value in values)
+
+
 class PlannerCoreTests(unittest.TestCase):
     def make_inputs(
         self,
@@ -158,6 +165,37 @@ class BridgeTests(unittest.TestCase):
 
         self.assertIn("charge_slots", result)
         self.assertIn("debug_summary", result)
+
+    def test_bridge_accepts_compact_hourly_usage_profile(self) -> None:
+        payload = {
+            "now": "2026-03-24T00:15:00+02:00",
+            "battery_soc_pct": "22",
+            "battery_capacity_kwh": "12",
+            "usable_battery_kwh": "10",
+            "reserve_soc_pct": "18",
+            "max_charge_current_setting": "40",
+            "solar_forecast_tomorrow_kwh": "3.5",
+            "solar_forecast_by_period_kwh": json.dumps([0.0] * 32),
+            "price_horizon": json.dumps(
+                [
+                    {"start_ts": "2026-03-24T00:00:00+02:00", "price_cents_per_kwh": 6.0},
+                    {"start_ts": "2026-03-24T00:15:00+02:00", "price_cents_per_kwh": 5.0},
+                    {"start_ts": "2026-03-24T00:30:00+02:00", "price_cents_per_kwh": 4.0},
+                    {"start_ts": "2026-03-24T00:45:00+02:00", "price_cents_per_kwh": 4.0},
+                    {"start_ts": "2026-03-24T01:00:00+02:00", "price_cents_per_kwh": 5.0},
+                    {"start_ts": "2026-03-24T06:00:00+02:00", "price_cents_per_kwh": 28.0}
+                ]
+            ),
+            "rolling_usage_7d": build_compact_hourly_usage_profile(),
+            "current_charge_slots": json.dumps([]),
+            "current_discharge_slots": json.dumps([]),
+        }
+
+        result = planner_inputs_from_hass_state(payload)
+
+        self.assertEqual(96, len(result.rolling_usage_7d))
+        self.assertEqual(0.15, result.rolling_usage_7d[0].avg_kwh_per_15m)
+        self.assertEqual(0.35, result.rolling_usage_7d[24].avg_kwh_per_15m)
 
 
 if __name__ == "__main__":
