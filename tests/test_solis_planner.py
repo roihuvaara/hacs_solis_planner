@@ -162,6 +162,23 @@ class PlannerCoreTests(unittest.TestCase):
 
         self.assertAlmostEqual(2.4, result.expected_morning_load_kwh)
 
+    def test_charge_slots_use_configured_max_charge_current(self) -> None:
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.0] * 32,
+        )
+        inputs = PlannerInputs(
+            **{
+                **inputs.__dict__,
+                "max_charge_current_setting": 25,
+            }
+        )
+
+        result = plan_solis_schedule(inputs)
+        first_charge_slot = next(slot for slot in result.charge_slots if slot.enabled)
+
+        self.assertEqual(25, first_charge_slot.current)
+
 
 class LoadForecastTests(unittest.TestCase):
     def test_build_load_forecast_applies_weather_adjusted_baseline_and_recent_residual(self) -> None:

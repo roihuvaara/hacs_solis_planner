@@ -323,6 +323,7 @@ def plan_solis_schedule(inputs: PlannerInputs) -> PlannerResult:
         period_plan=period_plan,
         current_charge_slots=inputs.current_charge_slots,
         current_discharge_slots=inputs.current_discharge_slots,
+        max_charge_current_setting=inputs.max_charge_current_setting,
         max_slots=6,
     )
 
@@ -455,6 +456,7 @@ def compile_periods_to_solis_slots(
     period_plan: list[PeriodDecision],
     current_charge_slots: list[SolisSlot],
     current_discharge_slots: list[SolisSlot],
+    max_charge_current_setting: int,
     max_slots: int = 6,
 ) -> tuple[list[SolisSlot], list[SolisSlot]]:
     current_period = floor_to_period(now)
@@ -477,7 +479,7 @@ def compile_periods_to_solis_slots(
 
     default_charge_current = next(
         (slot.current for slot in current_charge_slots if slot.enabled and slot.current > 0),
-        40,
+        max_charge_current_setting,
     )
     charge_windows = prioritize_windows(
         contiguous_windows(normalized_plan, "charge"),
