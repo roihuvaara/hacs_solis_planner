@@ -8,3 +8,71 @@ plan_schedule:
       required: true
       selector:
         object:
+
+build_load_forecast:
+  name: Build load forecast
+  description: Build a weather-adjusted load forecast aligned to the planner horizon.
+  fields:
+    forecast_state:
+      name: Forecast state
+      description: Optional direct forecast payload with explicit samples for load and temperature history.
+      required: false
+      selector:
+        object:
+    planner_state:
+      name: Planner state
+      description: Planner horizon context used when deriving samples from Home Assistant entities.
+      required: false
+      selector:
+        object:
+    energy_entity_id:
+      name: Energy entity
+      description: Total-increasing energy sensor used to derive recent per-period consumption.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    temperature_entity_id:
+      name: Temperature entity
+      description: Outdoor temperature sensor used for historical weather correction.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    weather_entity_id:
+      name: Weather entity
+      description: Weather entity used for hourly temperature forecast lookups.
+      required: false
+      selector:
+        entity:
+          domain: weather
+    baseline_days:
+      name: Baseline days
+      description: Number of complete trailing days used for the baseline window.
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 7
+          max: 90
+          mode: box
+    recent_days:
+      name: Recent days
+      description: Number of complete trailing days used for the residual trend window.
+      required: false
+      default: 7
+      selector:
+        number:
+          min: 1
+          max: 30
+          mode: box
+    bucket_minutes:
+      name: Bucket minutes
+      description: Period size used for historical bucket alignment.
+      required: false
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 60
+          mode: box

@@ -40,6 +40,7 @@ class PlannerInputs:
     max_charge_current_setting: int
     solar_forecast_tomorrow_kwh: float
     solar_forecast_by_period_kwh: list[float] | None
+    load_forecast_by_period_kwh: list[float] | None
     price_horizon: list[PeriodPrice]
     rolling_usage_7d: list[UsageBucket]
     current_charge_slots: list[SolisSlot]
@@ -187,9 +188,14 @@ def expected_morning_energy(
     total_solar = 0.0
 
     for period in morning_window:
-        minute_of_day = period.start_ts.astimezone(inputs.now.tzinfo).hour * 60 + period.start_ts.minute
-        total_load += usage_by_bucket.get(minute_of_day, 0.0)
-        total_solar += solar_by_period[horizon_index.get(period.start_ts, 0)] if solar_by_period else 0.0
+        period_index = horizon_index.get(period.start_ts, 0)
+        if inputs.load_forecast_by_period_kwh and period_index < len(inputs.load_forecast_by_period_kwh):
+            total_load += inputs.load_forecast_by_period_kwh[period_index]
+        else:
+            minute_of_day = period.start_ts.astimezone(inputs.now.tzinfo).hour * 60 + period.start_ts.minute
+            total_load += usage_by_bucket.get(minute_of_day, 0.0)
+        if solar_by_period and period_index < len(solar_by_period):
+            total_solar += solar_by_period[period_index]
 
     return total_load, total_solar
 

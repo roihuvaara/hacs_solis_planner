@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from .core import UsageBucket
+
+PACKED_QUARTER_PROFILE_PREFIX = "q96b64:v1:"
+PACKED_QUARTER_PROFILE_SCALE = 0.02
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,28 @@ def encode_usage_buckets(buckets: list[UsageBucket]) -> str:
     )
 
 
+def encode_quarter_hour_profile(values: list[float]) -> str:
+    if len(values) != 96:
+        raise ValueError("packed profile requires exactly 96 quarter-hour values")
+    quantized = bytearray(
+        max(0, min(255, round(float(value) / PACKED_QUARTER_PROFILE_SCALE)))
+        for value in values
+    )
+    payload = base64.urlsafe_b64encode(bytes(quantized)).decode("ascii")
+    return f"{PACKED_QUARTER_PROFILE_PREFIX}{payload}"
+
+
+def decode_quarter_hour_profile(payload: str) -> list[float]:
+    raw_payload = (payload or "").strip()
+    if not raw_payload.startswith(PACKED_QUARTER_PROFILE_PREFIX):
+        raise ValueError("payload is not a packed quarter-hour profile")
+    encoded = raw_payload.removeprefix(PACKED_QUARTER_PROFILE_PREFIX)
+    decoded = base64.urlsafe_b64decode(encoded.encode("ascii"))
+    if len(decoded) != 96:
+        raise ValueError("packed profile must decode to 96 quarter-hour values")
+    return [round(value * PACKED_QUARTER_PROFILE_SCALE, 4) for value in decoded]
+
+
 def _expand_numeric_profile(values: list[float]) -> list[UsageBucket]:
     if len(values) == 24:
         expanded = [hourly_value / 4.0 for hourly_value in values for _ in range(4)]
@@ -77,6 +103,8 @@ def _load_usage_payload(payload: str | list[Any]) -> list[Any]:
     raw_payload = (payload or "").strip()
     if not raw_payload:
         return []
+    if raw_payload.startswith(PACKED_QUARTER_PROFILE_PREFIX):
+        return decode_quarter_hour_profile(raw_payload)
     if raw_payload.startswith("["):
         return json.loads(raw_payload)
     return [float(part) for part in raw_payload.split(",") if part]

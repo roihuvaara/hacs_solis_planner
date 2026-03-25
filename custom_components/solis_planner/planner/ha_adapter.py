@@ -26,6 +26,7 @@ def parse_slots(payload: str | list[dict[str, Any]] | None) -> list[SolisSlot]:
 def planner_inputs_from_hass_state(state: Mapping[str, Any]) -> PlannerInputs:
     price_horizon_raw = json.loads(str(state["price_horizon"]))
     solar_forecast_by_period = json.loads(str(state["solar_forecast_by_period_kwh"])) if state.get("solar_forecast_by_period_kwh") else None
+    load_forecast_by_period = json.loads(str(state["load_forecast_by_period_kwh"])) if state.get("load_forecast_by_period_kwh") else None
     return PlannerInputs(
         now=datetime.fromisoformat(str(state["now"])),
         battery_soc_pct=float(state["battery_soc_pct"]),
@@ -35,6 +36,7 @@ def planner_inputs_from_hass_state(state: Mapping[str, Any]) -> PlannerInputs:
         max_charge_current_setting=int(state["max_charge_current_setting"]),
         solar_forecast_tomorrow_kwh=float(state["solar_forecast_tomorrow_kwh"]),
         solar_forecast_by_period_kwh=solar_forecast_by_period,
+        load_forecast_by_period_kwh=load_forecast_by_period,
         price_horizon=[
             PeriodPrice(
                 start_ts=datetime.fromisoformat(item["start_ts"]),

@@ -19,6 +19,11 @@ from custom_components.solis_planner.planner.ha_adapter import (
     planner_result_to_hass_payload,
     run_planner_from_hass_state,
 )
+from custom_components.solis_planner.planner.forecast import (
+    LoadForecastResult,
+    TemperatureSample,
+    build_load_forecast_for_periods,
+)
 from custom_components.solis_planner.planner.usage import (
     UsageSample,
     decode_usage_buckets,
@@ -67,6 +72,7 @@ class PlannerCoreTests(unittest.TestCase):
         *,
         solar_forecast_tomorrow_kwh: float,
         solar_forecast_by_period_kwh: list[float] | None = None,
+        load_forecast_by_period_kwh: list[float] | None = None,
         price_values: list[float] | None = None,
         battery_soc_pct: float = 22.0,
         now: datetime | None = None,
@@ -94,6 +100,7 @@ class PlannerCoreTests(unittest.TestCase):
             max_charge_current_setting=40,
             solar_forecast_tomorrow_kwh=solar_forecast_tomorrow_kwh,
             solar_forecast_by_period_kwh=solar_forecast_by_period_kwh,
+            load_forecast_by_period_kwh=load_forecast_by_period_kwh,
             price_horizon=price_horizon,
             rolling_usage_7d=usage_buckets,
             current_charge_slots=current_charge_slots or [],
@@ -133,6 +140,61 @@ class PlannerCoreTests(unittest.TestCase):
 
         self.assertEqual(first.period_plan, second.period_plan)
         self.assertEqual(first.charge_slots, second.charge_slots)
+
+    def test_explicit_load_forecast_takes_precedence_over_rolling_profile(self) -> None:
+        now = dt("2026-03-24T05:45:00")
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            now=now,
+            load_forecast_by_period_kwh=[
+                *([0.0] * 24),
+                0.6, 0.6, 0.6, 0.6,
+                *([0.0] * 12),
+            ],
+            price_values=[
+                *([8.0] * 24),
+                30.0, 30.0, 30.0, 30.0,
+                *([10.0] * 12),
+            ],
+        )
+
+        result = plan_solis_schedule(inputs)
+
+        self.assertAlmostEqual(2.4, result.expected_morning_load_kwh)
+
+
+class LoadForecastTests(unittest.TestCase):
+    def test_build_load_forecast_applies_weather_adjusted_baseline_and_recent_residual(self) -> None:
+        target_periods = [dt("2026-03-30T06:00:00")]
+        load_samples = [
+            UsageSample(start_ts=dt("2026-03-09T06:00:00"), kwh=1.0),
+            UsageSample(start_ts=dt("2026-03-16T06:00:00"), kwh=2.0),
+            UsageSample(start_ts=dt("2026-03-23T06:00:00"), kwh=2.25),
+        ]
+        temperature_samples = [
+            TemperatureSample(start_ts=dt("2026-03-09T06:00:00"), temperature_c=10.0),
+            TemperatureSample(start_ts=dt("2026-03-16T06:00:00"), temperature_c=0.0),
+            TemperatureSample(start_ts=dt("2026-03-23T06:00:00"), temperature_c=0.0),
+        ]
+        future_temperatures = [
+            TemperatureSample(start_ts=dt("2026-03-30T06:00:00"), temperature_c=0.0),
+        ]
+
+        result = build_load_forecast_for_periods(
+            target_period_starts=target_periods,
+            load_samples=load_samples,
+            historical_temperature_samples=temperature_samples,
+            future_temperature_samples=future_temperatures,
+            target_time=dt("2026-03-30T00:00:00"),
+            baseline_days=14,
+            recent_days=7,
+            bucket_minutes=15,
+        )
+
+        self.assertIsInstance(result, LoadForecastResult)
+        self.assertEqual([2.25], result.load_forecast_by_period_kwh)
+        self.assertEqual(1, result.weather_adjusted_bucket_count)
+        self.assertEqual(1, result.recent_residual_bucket_count)
 
 
 class BridgeTests(unittest.TestCase):
