@@ -210,7 +210,7 @@ def derive_soc_targets(
     expected_morning_load_kwh: float,
     expected_morning_solar_kwh: float,
 ) -> tuple[int, int]:
-    reserve = ceil(inputs.reserve_soc_pct)
+    reserve = max(DISABLED_SLOT["soc"], ceil(inputs.reserve_soc_pct))
     required_kwh = max(0.0, expected_morning_load_kwh - expected_morning_solar_kwh)
     hold_soc = clamp(
         ceil(inputs.reserve_soc_pct + (required_kwh / max(inputs.usable_battery_kwh, 0.1)) * 100),

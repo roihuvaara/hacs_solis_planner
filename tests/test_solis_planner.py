@@ -179,6 +179,24 @@ class PlannerCoreTests(unittest.TestCase):
 
         self.assertEqual(25, first_charge_slot.current)
 
+    def test_targets_respect_solis_min_soc_floor(self) -> None:
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.0] * 32,
+        )
+        inputs = PlannerInputs(
+            **{
+                **inputs.__dict__,
+                "battery_soc_pct": 18.0,
+                "reserve_soc_pct": 18.0,
+            }
+        )
+
+        result = plan_solis_schedule(inputs)
+
+        self.assertGreaterEqual(result.target_soc_pct, 19)
+        self.assertGreaterEqual(result.hold_soc_pct, 19)
+
 
 class LoadForecastTests(unittest.TestCase):
     def test_build_load_forecast_applies_weather_adjusted_baseline_and_recent_residual(self) -> None:
