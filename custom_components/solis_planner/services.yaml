@@ -1,0 +1,10 @@
+plan_schedule:
+  name: Plan schedule
+  description: Plan Solis charge and hold slots from a Home Assistant state payload.
+  fields:
+    planner_state:
+      name: Planner state
+      description: Full planner input mapping, including horizon, usage profile, and current slots.
+      required: true
+      selector:
+        object:

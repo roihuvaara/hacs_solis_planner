@@ -1,0 +1,10 @@
+{
+  "domain": "solis_planner",
+  "name": "Solis Planner",
+  "config_flow": true,
+  "documentation": "https://github.com/roihuvaara/ha",
+  "issue_tracker": "https://github.com/roihuvaara/ha/issues",
+  "version": "0.1.0",
+  "iot_class": "calculated",
+  "homeassistant": "2025.1.0"
+}

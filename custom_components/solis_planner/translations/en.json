@@ -1,0 +1,26 @@
+{
+  "title": "Solis Planner",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Solis Planner",
+        "description": "Register the planner service bridge for Solis slot planning."
+      }
+    },
+    "abort": {
+      "already_configured": "Solis Planner is already configured."
+    }
+  },
+  "services": {
+    "plan_schedule": {
+      "name": "Plan schedule",
+      "description": "Plan Solis charge and hold slots from a Home Assistant state payload.",
+      "fields": {
+        "planner_state": {
+          "name": "Planner state",
+          "description": "Complete planner input mapping with timestamps, prices, usage profile, and current slot data."
+        }
+      }
+    }
+  }
+}
