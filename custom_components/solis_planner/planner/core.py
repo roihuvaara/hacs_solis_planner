@@ -61,6 +61,7 @@ class PeriodDecision:
     target_soc_pct: int | None
     hold_soc_pct: int | None
     reason: str
+    planned_charge_kwh: float = 0.0
     priority_score: float = 0.0
 
 
@@ -240,6 +241,30 @@ def current_setting_to_period_kwh(current_setting: int) -> float:
 
 def planned_charge_current_setting(inputs: PlannerInputs) -> int:
     return max(1, min(inputs.max_charge_current_setting, SAFE_PLANNED_CHARGE_CURRENT_SETTING))
+
+
+def minimum_charge_current_for_window(
+    decisions: list[PeriodDecision],
+    max_charge_current_setting: int,
+) -> int:
+    amp_period_kwh = current_setting_to_period_kwh(1)
+    if amp_period_kwh <= 0:
+        return max_charge_current_setting
+
+    cumulative_charge_kwh = 0.0
+    required_current = 0
+    for index, decision in enumerate(decisions, start=1):
+        cumulative_charge_kwh += max(0.0, decision.planned_charge_kwh)
+        if cumulative_charge_kwh <= 1e-9:
+            continue
+        required_current = max(
+            required_current,
+            ceil(cumulative_charge_kwh / (amp_period_kwh * index) - 1e-9),
+        )
+
+    if required_current == 0:
+        return max_charge_current_setting
+    return clamp(required_current, 1, max_charge_current_setting)
 
 
 def build_horizon_periods(inputs: PlannerInputs) -> list[HorizonPeriod]:
@@ -561,6 +586,7 @@ def decision_from_forecast(
         target_soc_pct=target_soc_pct,
         hold_soc_pct=hold_soc_pct,
         reason=reason,
+        planned_charge_kwh=round(forecast_period.planned_charge_kwh, 3),
         priority_score=round(priority_score, 3),
     )
 
@@ -734,6 +760,8 @@ def compile_windows_to_slots(
             slot_start, slot_end = slot_time_range(live_slot, now)
             if is_charge and live_slot.current > 0:
                 slot_current = live_slot.current
+        elif is_charge:
+            slot_current = minimum_charge_current_for_window(decisions, default_current)
         soc = max(
             decision.target_soc_pct or decision.hold_soc_pct or DISABLED_SLOT["soc"]
             for decision in decisions
@@ -803,6 +831,7 @@ def compile_periods_to_solis_slots(
                     target_soc_pct=live_slot.soc if live_strategy == "charge" and live_slot else decision.target_soc_pct,
                     hold_soc_pct=live_slot.soc if live_strategy == "hold" and live_slot else decision.hold_soc_pct,
                     reason=decision.reason,
+                    planned_charge_kwh=decision.planned_charge_kwh,
                     priority_score=decision.priority_score,
                 )
             )

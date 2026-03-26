@@ -169,7 +169,7 @@ class PlannerCoreTests(unittest.TestCase):
 
         self.assertAlmostEqual(2.4, result.expected_morning_load_kwh)
 
-    def test_charge_slots_cap_planned_charge_current_to_safe_default(self) -> None:
+    def test_charge_slots_do_not_exceed_safe_default(self) -> None:
         inputs = self.make_inputs(
             solar_forecast_tomorrow_kwh=0.0,
             solar_forecast_by_period_kwh=[0.0] * 32,
@@ -184,7 +184,8 @@ class PlannerCoreTests(unittest.TestCase):
         result = plan_solis_schedule(inputs)
         first_charge_slot = next(slot for slot in result.charge_slots if slot.enabled)
 
-        self.assertEqual(12, first_charge_slot.current)
+        self.assertGreaterEqual(first_charge_slot.current, 1)
+        self.assertLessEqual(first_charge_slot.current, 12)
 
     def test_charge_slots_keep_lower_configured_charge_current(self) -> None:
         inputs = self.make_inputs(
@@ -201,7 +202,8 @@ class PlannerCoreTests(unittest.TestCase):
         result = plan_solis_schedule(inputs)
         first_charge_slot = next(slot for slot in result.charge_slots if slot.enabled)
 
-        self.assertEqual(10, first_charge_slot.current)
+        self.assertGreaterEqual(first_charge_slot.current, 1)
+        self.assertLessEqual(first_charge_slot.current, 10)
 
     def test_targets_respect_solis_min_soc_floor(self) -> None:
         inputs = self.make_inputs(
@@ -307,6 +309,7 @@ class PlannerCoreTests(unittest.TestCase):
                 target_soc_pct=19,
                 hold_soc_pct=None,
                 reason="preserve active charge",
+                planned_charge_kwh=0.0,
             ),
             PeriodDecision(
                 start_ts=dt("2026-03-27T04:15:00"),
@@ -314,6 +317,7 @@ class PlannerCoreTests(unittest.TestCase):
                 target_soc_pct=32,
                 hold_soc_pct=None,
                 reason="future top-up should use safe current",
+                planned_charge_kwh=0.15,
             ),
         ]
 
@@ -333,6 +337,90 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertEqual(25, enabled_charge_slots[0].current)
         self.assertEqual("04:15-04:30", enabled_charge_slots[1].time)
         self.assertEqual(12, enabled_charge_slots[1].current)
+
+    def test_charge_window_uses_lowest_current_that_meets_cumulative_energy(self) -> None:
+        now = dt("2026-03-27T00:00:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=dt("2026-03-27T01:00:00"),
+                strategy="charge",
+                target_soc_pct=24,
+                hold_soc_pct=None,
+                reason="slow charge is enough",
+                planned_charge_kwh=0.1,
+            ),
+            PeriodDecision(
+                start_ts=dt("2026-03-27T01:15:00"),
+                strategy="charge",
+                target_soc_pct=25,
+                hold_soc_pct=None,
+                reason="slow charge is enough",
+                planned_charge_kwh=0.1,
+            ),
+            PeriodDecision(
+                start_ts=dt("2026-03-27T01:30:00"),
+                strategy="charge",
+                target_soc_pct=26,
+                hold_soc_pct=None,
+                reason="slow charge is enough",
+                planned_charge_kwh=0.1,
+            ),
+        ]
+
+        charge_slots, _ = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[],
+            current_discharge_slots=[],
+            max_charge_current_setting=12,
+        )
+
+        enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
+
+        self.assertEqual(["01:00-01:45"], [slot.time for slot in enabled_charge_slots])
+        self.assertEqual(8, enabled_charge_slots[0].current)
+
+    def test_front_loaded_charge_window_uses_higher_current_when_needed_early(self) -> None:
+        now = dt("2026-03-27T00:00:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=dt("2026-03-27T01:00:00"),
+                strategy="charge",
+                target_soc_pct=25,
+                hold_soc_pct=None,
+                reason="large price gap justifies early fill",
+                planned_charge_kwh=0.15,
+            ),
+            PeriodDecision(
+                start_ts=dt("2026-03-27T01:15:00"),
+                strategy="charge",
+                target_soc_pct=26,
+                hold_soc_pct=None,
+                reason="large price gap justifies early fill",
+                planned_charge_kwh=0.05,
+            ),
+            PeriodDecision(
+                start_ts=dt("2026-03-27T01:30:00"),
+                strategy="charge",
+                target_soc_pct=27,
+                hold_soc_pct=None,
+                reason="large price gap justifies early fill",
+                planned_charge_kwh=0.05,
+            ),
+        ]
+
+        charge_slots, _ = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[],
+            current_discharge_slots=[],
+            max_charge_current_setting=12,
+        )
+
+        enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
+
+        self.assertEqual(["01:00-01:45"], [slot.time for slot in enabled_charge_slots])
+        self.assertEqual(12, enabled_charge_slots[0].current)
 
     def test_multi_spike_horizon_reserves_battery_for_both_morning_spikes(self) -> None:
         now = dt("2026-03-26T23:00:00")
