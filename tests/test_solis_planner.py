@@ -228,6 +228,55 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertFalse(any(slot.enabled for slot in charge_slots))
         self.assertEqual("05:45-08:00", discharge_slots[0].time)
 
+    def test_live_charge_slot_suppresses_overlapping_future_windows(self) -> None:
+        now = dt("2026-03-26T23:30:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=now,
+                strategy="charge",
+                target_soc_pct=19,
+                hold_soc_pct=None,
+                reason="preserve active charge",
+            ),
+            PeriodDecision(
+                start_ts=now + timedelta(hours=1, minutes=15),
+                strategy="charge",
+                target_soc_pct=22,
+                hold_soc_pct=None,
+                reason="cheap top-up later inside active slot",
+            ),
+            PeriodDecision(
+                start_ts=now + timedelta(minutes=15),
+                strategy="hold",
+                target_soc_pct=None,
+                hold_soc_pct=19,
+                reason="hold inside active slot should be dropped",
+            ),
+            PeriodDecision(
+                start_ts=now + timedelta(hours=6, minutes=30),
+                strategy="hold",
+                target_soc_pct=None,
+                hold_soc_pct=100,
+                reason="future daytime hold should remain",
+            ),
+        ]
+
+        charge_slots, discharge_slots = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[
+                SolisSlot(time="23:00-05:45", enabled=True, current=25, soc=19),
+            ],
+            current_discharge_slots=[],
+            max_charge_current_setting=25,
+        )
+
+        enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
+        enabled_discharge_slots = [slot for slot in discharge_slots if slot.enabled]
+
+        self.assertEqual(["23:00-05:45"], [slot.time for slot in enabled_charge_slots])
+        self.assertEqual(["06:00-06:15"], [slot.time for slot in enabled_discharge_slots])
+
     def test_multi_spike_horizon_reserves_battery_for_both_morning_spikes(self) -> None:
         now = dt("2026-03-26T23:00:00")
         inputs = self.make_inputs(

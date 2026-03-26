@@ -743,6 +743,36 @@ def compile_windows_to_slots(
     return slots
 
 
+def trim_windows_for_live_slot(
+    windows: list[tuple[datetime, datetime, list[PeriodDecision]]],
+    *,
+    now: datetime,
+    live_slot: SolisSlot | None,
+    keep_current_window: bool,
+) -> list[tuple[datetime, datetime, list[PeriodDecision]]]:
+    if live_slot is None:
+        return windows
+
+    current_period = floor_to_period(now)
+    live_start, live_end = slot_time_range(live_slot, now)
+    trimmed_windows: list[tuple[datetime, datetime, list[PeriodDecision]]] = []
+    current_window_kept = False
+
+    for window in windows:
+        start, end, decisions = window
+        overlaps_live_slot = start < live_end and end > live_start
+        contains_current = start <= current_period < end
+
+        if not overlaps_live_slot:
+            trimmed_windows.append(window)
+            continue
+        if keep_current_window and contains_current and not current_window_kept:
+            trimmed_windows.append((start, end, decisions))
+            current_window_kept = True
+
+    return trimmed_windows
+
+
 def compile_periods_to_solis_slots(
     now: datetime,
     period_plan: list[PeriodDecision],
@@ -780,11 +810,23 @@ def compile_periods_to_solis_slots(
         max_slots,
         live_strategy,
     )
+    charge_windows = trim_windows_for_live_slot(
+        charge_windows,
+        now=now,
+        live_slot=live_slot,
+        keep_current_window=live_strategy == "charge",
+    )
     hold_windows = prioritize_windows(
         contiguous_windows(normalized_plan, "hold"),
         now,
         max_slots,
         live_strategy,
+    )
+    hold_windows = trim_windows_for_live_slot(
+        hold_windows,
+        now=now,
+        live_slot=live_slot,
+        keep_current_window=live_strategy == "hold",
     )
     charge_slots = compile_windows_to_slots(
         charge_windows,
