@@ -23,16 +23,29 @@ def parse_slots(payload: str | list[dict[str, Any]] | None) -> list[SolisSlot]:
     ]
 
 
+def planner_battery_capacity_kwh(state: Mapping[str, Any]) -> float:
+    raw_capacity = state.get("battery_capacity_kwh")
+    if raw_capacity not in (None, "", "unknown", "unavailable"):
+        return float(raw_capacity)
+
+    raw_legacy_capacity = state.get("usable_battery_kwh")
+    if raw_legacy_capacity not in (None, "", "unknown", "unavailable"):
+        return float(raw_legacy_capacity)
+
+    raise KeyError("battery_capacity_kwh")
+
+
 def planner_inputs_from_hass_state(state: Mapping[str, Any]) -> PlannerInputs:
     price_horizon_raw = json.loads(str(state["price_horizon"]))
     solar_forecast_by_period = json.loads(str(state["solar_forecast_by_period_kwh"])) if state.get("solar_forecast_by_period_kwh") else None
     load_forecast_by_period = json.loads(str(state["load_forecast_by_period_kwh"])) if state.get("load_forecast_by_period_kwh") else None
     max_charge_current_setting = int(state["max_charge_current_setting"])
+    battery_capacity_kwh = planner_battery_capacity_kwh(state)
     return PlannerInputs(
         now=datetime.fromisoformat(str(state["now"])),
         battery_soc_pct=float(state["battery_soc_pct"]),
-        battery_capacity_kwh=float(state["battery_capacity_kwh"]),
-        usable_battery_kwh=float(state["usable_battery_kwh"]),
+        battery_capacity_kwh=battery_capacity_kwh,
+        usable_battery_kwh=battery_capacity_kwh,
         reserve_soc_pct=float(state["reserve_soc_pct"]),
         max_charge_current_setting=max_charge_current_setting,
         max_discharge_current_setting=int(state.get("max_discharge_current_setting", max_charge_current_setting)),

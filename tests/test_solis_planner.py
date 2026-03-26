@@ -566,6 +566,59 @@ class RuntimeSourceTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_bridge_prefers_total_battery_capacity_over_legacy_usable_input(self) -> None:
+        payload = {
+            "now": "2026-03-24T00:15:00+02:00",
+            "battery_soc_pct": "29",
+            "battery_capacity_kwh": "5.12",
+            "usable_battery_kwh": "10",
+            "reserve_soc_pct": "18",
+            "max_charge_current_setting": "25",
+            "max_discharge_current_setting": "25",
+            "solar_forecast_tomorrow_kwh": "0",
+            "solar_forecast_by_period_kwh": json.dumps([0.0]),
+            "load_forecast_by_period_kwh": json.dumps([0.0]),
+            "price_horizon": json.dumps(
+                [
+                    {"start_ts": "2026-03-24T00:15:00+02:00", "price_cents_per_kwh": 5.0},
+                ]
+            ),
+            "rolling_usage_7d": build_usage_profile(),
+            "current_charge_slots": json.dumps([]),
+            "current_discharge_slots": json.dumps([]),
+        }
+
+        result = planner_inputs_from_hass_state(payload)
+
+        self.assertEqual(5.12, result.battery_capacity_kwh)
+        self.assertEqual(5.12, result.usable_battery_kwh)
+
+    def test_bridge_reports_battery_kwh_from_total_capacity_basis(self) -> None:
+        payload = {
+            "now": "2026-03-24T00:15:00+02:00",
+            "battery_soc_pct": "29",
+            "battery_capacity_kwh": "5.12",
+            "usable_battery_kwh": "10",
+            "reserve_soc_pct": "18",
+            "max_charge_current_setting": "25",
+            "max_discharge_current_setting": "25",
+            "solar_forecast_tomorrow_kwh": "0",
+            "solar_forecast_by_period_kwh": json.dumps([0.0]),
+            "load_forecast_by_period_kwh": json.dumps([0.0]),
+            "price_horizon": json.dumps(
+                [
+                    {"start_ts": "2026-03-24T00:15:00+02:00", "price_cents_per_kwh": 5.0},
+                ]
+            ),
+            "rolling_usage_7d": build_usage_profile(),
+            "current_charge_slots": json.dumps([]),
+            "current_discharge_slots": json.dumps([]),
+        }
+
+        result = plan_schedule_payload(payload)
+
+        self.assertAlmostEqual(1.473, result["forecast_periods"][0]["battery_start_kwh"], places=3)
+
     def test_bridge_plans_schedule_from_payload(self) -> None:
         payload = {
             "now": "2026-03-24T00:15:00+02:00",
