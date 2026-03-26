@@ -30,6 +30,10 @@ from custom_components.solis_planner.planner.usage import (
     derive_rolling_usage_buckets,
     encode_usage_buckets,
 )
+from custom_components.solis_planner.runtime_sources import (
+    power_rows_to_usage_samples,
+    solar_series_from_wh_period,
+)
 
 
 TZ = ZoneInfo("Europe/Helsinki")
@@ -362,6 +366,59 @@ class LoadForecastTests(unittest.TestCase):
         self.assertEqual([2.25], result.load_forecast_by_period_kwh)
         self.assertEqual(1, result.weather_adjusted_bucket_count)
         self.assertEqual(1, result.recent_residual_bucket_count)
+
+
+class RuntimeSourceTests(unittest.TestCase):
+    def test_power_rows_to_usage_samples_converts_mean_watts_to_kwh(self) -> None:
+        rows = [
+            {"start": "2026-03-25T06:00:00+02:00", "mean": 4800.0},
+            {"start": "2026-03-25T06:05:00+02:00", "mean": 5400.0},
+        ]
+
+        samples = power_rows_to_usage_samples(rows, tzinfo=TZ)
+
+        self.assertEqual(2, len(samples))
+        self.assertAlmostEqual(0.4, samples[0].kwh)
+        self.assertAlmostEqual(0.45, samples[1].kwh)
+
+    def test_solar_series_from_hourly_wh_period_distributes_across_quarters(self) -> None:
+        starts = [
+            dt("2026-03-27T08:00:00"),
+            dt("2026-03-27T08:15:00"),
+            dt("2026-03-27T08:30:00"),
+            dt("2026-03-27T08:45:00"),
+        ]
+        wh_period = {
+            dt("2026-03-27T09:00:00"): 2000,
+        }
+
+        values = solar_series_from_wh_period(
+            target_period_starts=starts,
+            wh_period=wh_period,
+        )
+
+        self.assertEqual([0.5, 0.5, 0.5, 0.5], values)
+
+    def test_solar_series_from_quarter_hour_wh_period_keeps_native_resolution(self) -> None:
+        starts = [
+            dt("2026-03-27T08:00:00"),
+            dt("2026-03-27T08:15:00"),
+            dt("2026-03-27T08:30:00"),
+            dt("2026-03-27T08:45:00"),
+        ]
+        wh_period = {
+            dt("2026-03-27T08:15:00"): 100,
+            dt("2026-03-27T08:30:00"): 200,
+            dt("2026-03-27T08:45:00"): 300,
+            dt("2026-03-27T09:00:00"): 400,
+        }
+
+        values = solar_series_from_wh_period(
+            target_period_starts=starts,
+            wh_period=wh_period,
+        )
+
+        self.assertEqual([0.1, 0.2, 0.3, 0.4], values)
 
 
 class BridgeTests(unittest.TestCase):

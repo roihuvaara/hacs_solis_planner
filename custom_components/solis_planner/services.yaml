@@ -25,9 +25,16 @@ build_load_forecast:
       required: false
       selector:
         object:
+    load_source_entity_id:
+      name: Load source entity
+      description: Power or energy sensor used to derive recent per-period consumption.
+      required: false
+      selector:
+        entity:
+          domain: sensor
     energy_entity_id:
       name: Energy entity
-      description: Total-increasing energy sensor used to derive recent per-period consumption.
+      description: Deprecated alias for load_source_entity_id kept for compatibility.
       required: false
       selector:
         entity:

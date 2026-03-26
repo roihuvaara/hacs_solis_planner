@@ -29,6 +29,10 @@ from .const import (
 )
 from .planner.forecast import TemperatureSample, build_load_forecast_for_periods
 from .planner.usage import UsageSample
+from .runtime_sources import (
+    async_build_solar_forecast_series,
+    power_rows_to_usage_samples,
+)
 
 type SolisPlannerConfigEntry = ConfigEntry
 
@@ -59,7 +63,8 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             planner_state = call.data.get("planner_state", {})
             if not isinstance(planner_state, Mapping):
                 raise ValueError("planner_state must be a mapping")
-            response = plan_schedule_payload(dict(planner_state))
+            normalized_state = dict(planner_state)
+            response = await _plan_schedule_from_hass(hass, normalized_state)
             _store_latest_plan_payload(hass, response)
             return response
 
@@ -94,9 +99,9 @@ async def _build_load_forecast_from_hass(
     hass: HomeAssistant,
     call: ServiceCall,
 ) -> ServiceResponse:
-    energy_entity_id = call.data.get("energy_entity_id")
-    if not energy_entity_id:
-        raise ValueError("energy_entity_id is required when forecast_state is not provided")
+    load_source_entity_id = call.data.get("load_source_entity_id") or call.data.get("energy_entity_id")
+    if not load_source_entity_id:
+        raise ValueError("load_source_entity_id is required when forecast_state is not provided")
 
     planner_state = call.data.get("planner_state", {})
     if not isinstance(planner_state, Mapping):
@@ -112,9 +117,9 @@ async def _build_load_forecast_from_hass(
     recent_days = int(call.data.get("recent_days", 7))
     bucket_minutes = int(call.data.get("bucket_minutes", 15))
 
-    load_samples = await _async_fetch_energy_samples(
+    load_samples = await _async_fetch_load_samples(
         hass=hass,
-        entity_id=str(energy_entity_id),
+        entity_id=str(load_source_entity_id),
         end_time=now,
         baseline_days=baseline_days,
     )
@@ -150,7 +155,72 @@ async def _build_load_forecast_from_hass(
         recent_days=recent_days,
         bucket_minutes=bucket_minutes,
     )
-    return forecast_result_to_payload(result)
+    payload = forecast_result_to_payload(result)
+    payload["source_mode"] = _load_source_mode(hass, str(load_source_entity_id))
+    payload["load_source_entity_id"] = str(load_source_entity_id)
+    return payload
+
+
+async def _plan_schedule_from_hass(
+    hass: HomeAssistant,
+    planner_state: dict[str, Any],
+) -> ServiceResponse:
+    solar_source_entity_id = planner_state.get("solar_source_entity_id")
+    price_horizon_raw = json.loads(str(planner_state["price_horizon"]))
+    target_period_starts = [
+        datetime.fromisoformat(item["start_ts"])
+        for item in price_horizon_raw
+    ]
+
+    solar_source_mode = "explicit_series" if planner_state.get("solar_forecast_by_period_kwh") else "daily_total_fallback"
+    if not planner_state.get("solar_forecast_by_period_kwh") and solar_source_entity_id:
+        solar_series, solar_source_mode = await async_build_solar_forecast_series(
+            hass,
+            source_entity_id=str(solar_source_entity_id),
+            target_period_starts=target_period_starts,
+        )
+        if solar_series:
+            planner_state["solar_forecast_by_period_kwh"] = json.dumps(solar_series)
+
+    response = plan_schedule_payload(planner_state)
+    response["solar_source_mode"] = solar_source_mode
+    if solar_source_entity_id:
+        response["solar_source_entity_id"] = str(solar_source_entity_id)
+    return response
+
+
+async def _async_fetch_load_samples(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    end_time: datetime,
+    baseline_days: int,
+) -> list[UsageSample]:
+    source_mode = _load_source_mode(hass, entity_id)
+    if source_mode == "power_derived":
+        return await _async_fetch_power_samples(
+            hass=hass,
+            entity_id=entity_id,
+            end_time=end_time,
+            baseline_days=baseline_days,
+        )
+    return await _async_fetch_energy_samples(
+        hass=hass,
+        entity_id=entity_id,
+        end_time=end_time,
+        baseline_days=baseline_days,
+    )
+
+
+def _load_source_mode(hass: HomeAssistant, entity_id: str) -> str:
+    state = hass.states.get(entity_id)
+    if state is None:
+        return "energy_change"
+    state_class = str(state.attributes.get("state_class", "")).lower()
+    unit = str(state.attributes.get("unit_of_measurement", "")).lower()
+    if state_class == "measurement" and unit in {"w", "kw"}:
+        return "power_derived"
+    return "energy_change"
 
 
 def _store_latest_plan_payload(hass: HomeAssistant, payload: Mapping[str, Any]) -> None:
@@ -193,6 +263,33 @@ async def _async_fetch_energy_samples(
         for row in rows
         if row.get("change") is not None
     ]
+
+
+async def _async_fetch_power_samples(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    end_time: datetime,
+    baseline_days: int,
+) -> list[UsageSample]:
+    try:
+        from homeassistant.components.recorder.statistics import statistics_during_period
+    except ModuleNotFoundError as err:  # pragma: no cover - only available in HA runtime
+        raise RuntimeError("Recorder statistics are unavailable in this environment") from err
+
+    start_time = end_time - timedelta(days=baseline_days)
+    response = await hass.async_add_executor_job(
+        statistics_during_period,
+        hass,
+        start_time,
+        end_time,
+        {entity_id},
+        "5minute",
+        None,
+        {"mean"},
+    )
+    rows = response.get(entity_id, [])
+    return power_rows_to_usage_samples(rows, tzinfo=end_time.tzinfo)
 
 
 async def _async_fetch_temperature_samples(
