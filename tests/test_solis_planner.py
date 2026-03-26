@@ -197,6 +197,34 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertGreaterEqual(result.target_soc_pct, 19)
         self.assertGreaterEqual(result.hold_soc_pct, 19)
 
+    def test_zero_length_enabled_slot_is_not_treated_as_live_charge(self) -> None:
+        now = dt("2026-03-26T22:30:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=now + timedelta(hours=7, minutes=15 + (15 * index)),
+                strategy="hold",
+                target_soc_pct=None,
+                hold_soc_pct=18,
+                reason="hold battery for morning value window",
+            )
+            for index in range(9)
+        ]
+
+        charge_slots, discharge_slots = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[
+                SolisSlot(time="00:00-00:00", enabled=True, current=25, soc=19),
+            ],
+            current_discharge_slots=[
+                SolisSlot(time="05:45-08:00", enabled=True, current=0, soc=19),
+            ],
+            max_charge_current_setting=25,
+        )
+
+        self.assertFalse(any(slot.enabled for slot in charge_slots))
+        self.assertEqual("05:45-08:00", discharge_slots[0].time)
+
 
 class LoadForecastTests(unittest.TestCase):
     def test_build_load_forecast_applies_weather_adjusted_baseline_and_recent_residual(self) -> None:

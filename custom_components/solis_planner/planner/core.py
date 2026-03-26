@@ -97,6 +97,8 @@ def slot_time_range(slot: SolisSlot, reference: datetime) -> tuple[datetime, dat
 def slot_overlaps_period(slot: SolisSlot, period_start: datetime) -> bool:
     if not slot.enabled:
         return False
+    if slot.time == "00:00-00:00":
+        return False
     slot_start, slot_end = slot_time_range(slot, period_start)
     period_end = period_start + timedelta(minutes=15)
     return slot_start < period_end and slot_end > period_start
