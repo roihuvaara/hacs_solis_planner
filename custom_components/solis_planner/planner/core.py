@@ -13,6 +13,7 @@ PERIOD_HOURS = 0.25
 ROUND_TRIP_EFFICIENCY = 0.9
 CHARGE_EFFICIENCY = sqrt(ROUND_TRIP_EFFICIENCY)
 DISCHARGE_EFFICIENCY = sqrt(ROUND_TRIP_EFFICIENCY)
+SAFE_PLANNED_CHARGE_CURRENT_SETTING = 12
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,10 @@ def current_setting_to_period_kwh(current_setting: int) -> float:
     return max(0.0, current_setting * BATTERY_NOMINAL_VOLTAGE * PERIOD_HOURS / 1000.0)
 
 
+def planned_charge_current_setting(inputs: PlannerInputs) -> int:
+    return max(1, min(inputs.max_charge_current_setting, SAFE_PLANNED_CHARGE_CURRENT_SETTING))
+
+
 def build_horizon_periods(inputs: PlannerInputs) -> list[HorizonPeriod]:
     horizon = sorted(inputs.price_horizon, key=lambda period: period.start_ts)
     current_period = floor_to_period(inputs.now)
@@ -304,6 +309,7 @@ def optimize_horizon(
     state_values = [round(index * STATE_STEP_KWH, 3) for index in range(max_units + 1)]
     current_units = quantize_units(buffer_kwh_from_soc_pct(inputs, inputs.battery_soc_pct), max_units)
     charge_limit_kwh = current_setting_to_period_kwh(inputs.max_charge_current_setting)
+    charge_limit_kwh = current_setting_to_period_kwh(planned_charge_current_setting(inputs))
     discharge_limit_kwh = current_setting_to_period_kwh(inputs.max_discharge_current_setting)
 
     dp: list[list[float]] = [[0.0] * (max_units + 1) for _ in range(len(periods) + 1)]
@@ -596,7 +602,7 @@ def plan_solis_schedule(inputs: PlannerInputs) -> PlannerResult:
         period_plan=period_plan,
         current_charge_slots=inputs.current_charge_slots,
         current_discharge_slots=inputs.current_discharge_slots,
-        max_charge_current_setting=inputs.max_charge_current_setting,
+        max_charge_current_setting=planned_charge_current_setting(inputs),
         max_slots=6,
     )
 
