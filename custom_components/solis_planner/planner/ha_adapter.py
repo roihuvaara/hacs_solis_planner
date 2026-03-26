@@ -35,17 +35,29 @@ def planner_battery_capacity_kwh(state: Mapping[str, Any]) -> float:
     raise KeyError("battery_capacity_kwh")
 
 
+def planner_battery_state_of_health_pct(state: Mapping[str, Any]) -> float:
+    raw_soh = state.get("battery_state_of_health_pct")
+    if raw_soh in (None, "", "unknown", "unavailable"):
+        return 100.0
+    return max(0.0, min(100.0, float(raw_soh)))
+
+
 def planner_inputs_from_hass_state(state: Mapping[str, Any]) -> PlannerInputs:
     price_horizon_raw = json.loads(str(state["price_horizon"]))
     solar_forecast_by_period = json.loads(str(state["solar_forecast_by_period_kwh"])) if state.get("solar_forecast_by_period_kwh") else None
     load_forecast_by_period = json.loads(str(state["load_forecast_by_period_kwh"])) if state.get("load_forecast_by_period_kwh") else None
     max_charge_current_setting = int(state["max_charge_current_setting"])
     battery_capacity_kwh = planner_battery_capacity_kwh(state)
+    battery_state_of_health_pct = planner_battery_state_of_health_pct(state)
+    effective_battery_capacity_kwh = round(
+        battery_capacity_kwh * battery_state_of_health_pct / 100.0,
+        4,
+    )
     return PlannerInputs(
         now=datetime.fromisoformat(str(state["now"])),
         battery_soc_pct=float(state["battery_soc_pct"]),
-        battery_capacity_kwh=battery_capacity_kwh,
-        usable_battery_kwh=battery_capacity_kwh,
+        battery_capacity_kwh=effective_battery_capacity_kwh,
+        usable_battery_kwh=effective_battery_capacity_kwh,
         reserve_soc_pct=float(state["reserve_soc_pct"]),
         max_charge_current_setting=max_charge_current_setting,
         max_discharge_current_setting=int(state.get("max_discharge_current_setting", max_charge_current_setting)),
