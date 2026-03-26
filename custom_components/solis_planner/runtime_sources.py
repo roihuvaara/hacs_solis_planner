@@ -55,9 +55,9 @@ def solar_series_from_wh_period(
     target_end = target_period_starts[-1] + target_period
     values = [0.0] * len(target_period_starts)
 
-    for period_end, watt_hours in sorted_periods:
-        interval_end = period_end
-        interval_start = interval_end - resolution
+    for period_start, watt_hours in sorted_periods:
+        interval_start = period_start
+        interval_end = interval_start + resolution
         if interval_end <= target_period_starts[0] or interval_start >= target_end:
             continue
 

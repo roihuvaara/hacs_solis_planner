@@ -513,7 +513,7 @@ class RuntimeSourceTests(unittest.TestCase):
             dt("2026-03-27T08:45:00"),
         ]
         wh_period = {
-            dt("2026-03-27T09:00:00"): 2000,
+            dt("2026-03-27T08:00:00"): 2000,
         }
 
         values = solar_series_from_wh_period(
@@ -531,10 +531,10 @@ class RuntimeSourceTests(unittest.TestCase):
             dt("2026-03-27T08:45:00"),
         ]
         wh_period = {
-            dt("2026-03-27T08:15:00"): 100,
-            dt("2026-03-27T08:30:00"): 200,
-            dt("2026-03-27T08:45:00"): 300,
-            dt("2026-03-27T09:00:00"): 400,
+            dt("2026-03-27T08:00:00"): 100,
+            dt("2026-03-27T08:15:00"): 200,
+            dt("2026-03-27T08:30:00"): 300,
+            dt("2026-03-27T08:45:00"): 400,
         }
 
         values = solar_series_from_wh_period(
