@@ -729,8 +729,11 @@ def compile_windows_to_slots(
     for start, end, decisions in windows:
         slot_start = start
         slot_end = end
+        slot_current = default_current if is_charge else 0
         if live_slot and slot_overlaps_period(live_slot, current_period) and start <= current_period < end:
             slot_start, slot_end = slot_time_range(live_slot, now)
+            if is_charge and live_slot.current > 0:
+                slot_current = live_slot.current
         soc = max(
             decision.target_soc_pct or decision.hold_soc_pct or DISABLED_SLOT["soc"]
             for decision in decisions
@@ -739,7 +742,7 @@ def compile_windows_to_slots(
             SolisSlot(
                 time=slot_time(slot_start, slot_end),
                 enabled=True,
-                current=default_current if is_charge else 0,
+                current=slot_current,
                 soc=soc,
             )
         )
@@ -806,10 +809,6 @@ def compile_periods_to_solis_slots(
             continue
         normalized_plan.append(decision)
 
-    default_charge_current = next(
-        (slot.current for slot in current_charge_slots if slot.enabled and slot.current > 0),
-        max_charge_current_setting,
-    )
     charge_windows = prioritize_windows(
         contiguous_windows(normalized_plan, "charge"),
         now,
@@ -838,7 +837,7 @@ def compile_periods_to_solis_slots(
         charge_windows,
         max_slots,
         is_charge=True,
-        default_current=default_charge_current,
+        default_current=max_charge_current_setting,
         live_slot=live_slot if live_strategy == "charge" else None,
         now=now,
     )

@@ -298,6 +298,42 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertEqual(["23:00-05:45"], [slot.time for slot in enabled_charge_slots])
         self.assertEqual(["06:00-06:15"], [slot.time for slot in enabled_discharge_slots])
 
+    def test_future_charge_windows_do_not_inherit_live_slot_current(self) -> None:
+        now = dt("2026-03-26T23:30:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=now,
+                strategy="charge",
+                target_soc_pct=19,
+                hold_soc_pct=None,
+                reason="preserve active charge",
+            ),
+            PeriodDecision(
+                start_ts=dt("2026-03-27T04:15:00"),
+                strategy="charge",
+                target_soc_pct=32,
+                hold_soc_pct=None,
+                reason="future top-up should use safe current",
+            ),
+        ]
+
+        charge_slots, _ = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[
+                SolisSlot(time="23:00-01:00", enabled=True, current=25, soc=19),
+            ],
+            current_discharge_slots=[],
+            max_charge_current_setting=12,
+        )
+
+        enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
+
+        self.assertEqual("23:00-01:00", enabled_charge_slots[0].time)
+        self.assertEqual(25, enabled_charge_slots[0].current)
+        self.assertEqual("04:15-04:30", enabled_charge_slots[1].time)
+        self.assertEqual(12, enabled_charge_slots[1].current)
+
     def test_multi_spike_horizon_reserves_battery_for_both_morning_spikes(self) -> None:
         now = dt("2026-03-26T23:00:00")
         inputs = self.make_inputs(
