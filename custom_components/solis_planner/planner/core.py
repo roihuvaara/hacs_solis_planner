@@ -14,6 +14,7 @@ ROUND_TRIP_EFFICIENCY = 0.9
 CHARGE_EFFICIENCY = sqrt(ROUND_TRIP_EFFICIENCY)
 DISCHARGE_EFFICIENCY = sqrt(ROUND_TRIP_EFFICIENCY)
 SAFE_PLANNED_CHARGE_CURRENT_SETTING = 12
+MORNING_SOLAR_LOAD_OFFSET_CONFIDENCE = 0.5
 
 
 @dataclass(frozen=True)
@@ -243,6 +244,13 @@ def planned_charge_current_setting(inputs: PlannerInputs) -> int:
     return max(1, min(inputs.max_charge_current_setting, SAFE_PLANNED_CHARGE_CURRENT_SETTING))
 
 
+def reliable_solar_offset_kwh(period_start: datetime, load_kwh: float, solar_kwh: float) -> float:
+    hour = period_start.hour
+    if 6 <= hour < 10:
+        return min(solar_kwh, load_kwh * MORNING_SOLAR_LOAD_OFFSET_CONFIDENCE)
+    return min(solar_kwh, load_kwh)
+
+
 def minimum_charge_current_for_window(
     decisions: list[PeriodDecision],
     max_charge_current_setting: int,
@@ -287,8 +295,9 @@ def build_horizon_periods(inputs: PlannerInputs) -> list[HorizonPeriod]:
             minute_of_day = period.start_ts.astimezone(inputs.now.tzinfo).hour * 60 + period.start_ts.minute
             load_kwh = max(0.0, usage_by_bucket.get(minute_of_day, 0.0))
         solar_kwh = max(0.0, float(solar_by_period[index])) if index < len(solar_by_period) else 0.0
-        net_import = max(0.0, load_kwh - solar_kwh)
-        solar_surplus = max(0.0, solar_kwh - load_kwh)
+        reliable_solar_kwh = reliable_solar_offset_kwh(period.start_ts.astimezone(inputs.now.tzinfo), load_kwh, solar_kwh)
+        net_import = max(0.0, load_kwh - reliable_solar_kwh)
+        solar_surplus = max(0.0, solar_kwh - reliable_solar_kwh)
         raw_periods.append((period, load_kwh, solar_kwh, net_import, solar_surplus))
 
     future_peak_price = 0.0

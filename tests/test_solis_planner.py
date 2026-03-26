@@ -457,6 +457,26 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertEqual("self_use", actions_by_time["08:30"])
         self.assertGreater(len(result.forecast_periods), 0)
 
+    def test_expensive_morning_slot_keeps_battery_buffer_despite_solar_forecast(self) -> None:
+        now = dt("2026-03-27T07:45:00")
+        inputs = self.make_inputs(
+            now=now,
+            price_horizon_start=now,
+            battery_soc_pct=34.0,
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.0, 0.6, 0.0, 0.0],
+            load_forecast_by_period_kwh=[0.05, 0.3, 0.05, 0.05],
+            price_values=[8.0, 18.0, 7.0, 7.0],
+        )
+
+        result = plan_solis_schedule(inputs)
+        actions_by_time = {
+            period.start_ts.strftime("%H:%M"): period.strategy
+            for period in result.period_plan
+        }
+
+        self.assertEqual("self_use", actions_by_time["08:00"])
+
 
 class LoadForecastTests(unittest.TestCase):
     def test_build_load_forecast_applies_weather_adjusted_baseline_and_recent_residual(self) -> None:
