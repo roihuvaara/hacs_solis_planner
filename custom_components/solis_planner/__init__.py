@@ -8,14 +8,25 @@ from typing import Any
 try:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
 except ModuleNotFoundError:  # pragma: no cover - local unit tests run without HA installed.
     ConfigEntry = Any  # type: ignore[misc,assignment]
     HomeAssistant = Any  # type: ignore[misc,assignment]
     ServiceCall = Any  # type: ignore[misc,assignment]
     ServiceResponse = dict[str, Any]  # type: ignore[misc,assignment]
 
+    def async_dispatcher_send(*args: Any, **kwargs: Any) -> None:
+        return None
+
 from .bridge import build_load_forecast_payload, forecast_result_to_payload, plan_schedule_payload
-from .const import DOMAIN, SERVICE_BUILD_LOAD_FORECAST, SERVICE_PLAN_SCHEDULE
+from .const import (
+    DATA_LATEST_PLAN,
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_BUILD_LOAD_FORECAST,
+    SERVICE_PLAN_SCHEDULE,
+    planner_update_signal,
+)
 from .planner.forecast import TemperatureSample, build_load_forecast_for_periods
 from .planner.usage import UsageSample
 
@@ -31,11 +42,13 @@ async def async_setup(hass: HomeAssistant, config: Mapping[str, Any]) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: SolisPlannerConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await _async_register_services(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SolisPlannerConfigEntry) -> bool:
+    await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return True
 
@@ -46,7 +59,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             planner_state = call.data.get("planner_state", {})
             if not isinstance(planner_state, Mapping):
                 raise ValueError("planner_state must be a mapping")
-            return plan_schedule_payload(dict(planner_state))
+            response = plan_schedule_payload(dict(planner_state))
+            _store_latest_plan_payload(hass, response)
+            return response
 
         hass.services.async_register(
             DOMAIN,
@@ -136,6 +151,14 @@ async def _build_load_forecast_from_hass(
         bucket_minutes=bucket_minutes,
     )
     return forecast_result_to_payload(result)
+
+
+def _store_latest_plan_payload(hass: HomeAssistant, payload: Mapping[str, Any]) -> None:
+    for entry_id, entry_state in hass.data.get(DOMAIN, {}).items():
+        if not isinstance(entry_state, dict):
+            continue
+        entry_state[DATA_LATEST_PLAN] = dict(payload)
+        async_dispatcher_send(hass, planner_update_signal(entry_id))
 
 
 async def _async_fetch_energy_samples(

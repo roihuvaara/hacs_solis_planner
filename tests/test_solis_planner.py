@@ -74,14 +74,16 @@ class PlannerCoreTests(unittest.TestCase):
         solar_forecast_by_period_kwh: list[float] | None = None,
         load_forecast_by_period_kwh: list[float] | None = None,
         price_values: list[float] | None = None,
+        price_horizon_start: datetime | None = None,
         battery_soc_pct: float = 22.0,
+        max_discharge_current_setting: int = 25,
         now: datetime | None = None,
         current_charge_slots: list[SolisSlot] | None = None,
         current_discharge_slots: list[SolisSlot] | None = None,
     ) -> PlannerInputs:
         now = now or dt("2026-03-24T00:15:00")
         price_horizon = build_price_horizon(
-            now.replace(hour=0, minute=0, second=0, microsecond=0),
+            price_horizon_start or now.replace(hour=0, minute=0, second=0, microsecond=0),
             price_values
             or [
                 6.0, 5.0, 4.0, 4.0, 5.0, 6.0, 8.0, 10.0,
@@ -98,6 +100,7 @@ class PlannerCoreTests(unittest.TestCase):
             usable_battery_kwh=10.0,
             reserve_soc_pct=18.0,
             max_charge_current_setting=40,
+            max_discharge_current_setting=max_discharge_current_setting,
             solar_forecast_tomorrow_kwh=solar_forecast_tomorrow_kwh,
             solar_forecast_by_period_kwh=solar_forecast_by_period_kwh,
             load_forecast_by_period_kwh=load_forecast_by_period_kwh,
@@ -225,6 +228,41 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertFalse(any(slot.enabled for slot in charge_slots))
         self.assertEqual("05:45-08:00", discharge_slots[0].time)
 
+    def test_multi_spike_horizon_reserves_battery_for_both_morning_spikes(self) -> None:
+        now = dt("2026-03-26T23:00:00")
+        inputs = self.make_inputs(
+            now=now,
+            price_horizon_start=now.replace(minute=0, second=0, microsecond=0),
+            battery_soc_pct=55.0,
+            solar_forecast_tomorrow_kwh=32.805,
+            solar_forecast_by_period_kwh=[
+                0.0 if period.start_ts.hour < 8 else 0.05
+                for period in build_price_horizon(now.replace(minute=0, second=0, microsecond=0), [0.0] * 32)
+            ],
+            load_forecast_by_period_kwh=[
+                0.05 if period.start_ts.hour < 7 else 0.35 if period.start_ts.hour < 11 else 0.1
+                for period in build_price_horizon(now.replace(minute=0, second=0, microsecond=0), [0.0] * 32)
+            ],
+            price_values=[
+                7.7786, 7.6192, 7.313, 7.1247, 7.5401, 7.4422, 7.2188, 7.1222,
+                7.5865, 7.2439, 7.1887, 7.2226, 7.1737, 7.2929, 7.3757, 7.4585,
+                7.2188, 7.3155, 7.4849, 7.7597, 7.264, 7.4861, 7.697, 8.0773,
+                7.3393, 7.5351, 8.0923, 8.3847, 7.4585, 7.7974, 8.273, 9.1892,
+                10.8454, 11.4591, 13.5787, 16.5983, 14.1912, 11.7941, 16.3837, 14.4899,
+                13.2688, 14.84, 13.7469, 13.9891, 14.2188, 13.1759, 12.0903, 11.326,
+            ],
+        )
+
+        result = plan_solis_schedule(inputs)
+        actions_by_time = {
+            period.start_ts.strftime("%H:%M"): period.strategy
+            for period in result.period_plan
+        }
+
+        self.assertEqual("self_use", actions_by_time["07:45"])
+        self.assertEqual("self_use", actions_by_time["08:30"])
+        self.assertGreater(len(result.forecast_periods), 0)
+
 
 class LoadForecastTests(unittest.TestCase):
     def test_build_load_forecast_applies_weather_adjusted_baseline_and_recent_residual(self) -> None:
@@ -299,6 +337,7 @@ class BridgeTests(unittest.TestCase):
             "usable_battery_kwh": "10",
             "reserve_soc_pct": "18",
             "max_charge_current_setting": "40",
+            "max_discharge_current_setting": "25",
             "solar_forecast_tomorrow_kwh": "3.5",
             "solar_forecast_by_period_kwh": json.dumps([0.0] * 32),
             "price_horizon": json.dumps(
@@ -321,6 +360,36 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(96, len(result.rolling_usage_7d))
         self.assertEqual(0.15, result.rolling_usage_7d[0].avg_kwh_per_15m)
         self.assertEqual(0.35, result.rolling_usage_7d[24].avg_kwh_per_15m)
+
+    def test_bridge_returns_chart_ready_forecast_periods(self) -> None:
+        payload = {
+            "now": "2026-03-24T00:15:00+02:00",
+            "battery_soc_pct": "55",
+            "battery_capacity_kwh": "12",
+            "usable_battery_kwh": "10",
+            "reserve_soc_pct": "18",
+            "max_charge_current_setting": "25",
+            "max_discharge_current_setting": "25",
+            "solar_forecast_tomorrow_kwh": "3.5",
+            "solar_forecast_by_period_kwh": json.dumps([0.0] * 32),
+            "load_forecast_by_period_kwh": json.dumps([0.2] * 32),
+            "price_horizon": json.dumps(
+                [
+                    {"start_ts": "2026-03-24T00:15:00+02:00", "price_cents_per_kwh": 5.0},
+                    {"start_ts": "2026-03-24T00:30:00+02:00", "price_cents_per_kwh": 4.0},
+                    {"start_ts": "2026-03-24T07:45:00+02:00", "price_cents_per_kwh": 18.0},
+                ]
+            ),
+            "rolling_usage_7d": build_compact_hourly_usage_profile(),
+            "current_charge_slots": json.dumps([]),
+            "current_discharge_slots": json.dumps([]),
+        }
+
+        result = plan_schedule_payload(payload)
+
+        self.assertIn("forecast_periods", result)
+        self.assertGreater(len(result["forecast_periods"]), 0)
+        self.assertIn("planned_action", result["forecast_periods"][0])
 
 
 if __name__ == "__main__":
