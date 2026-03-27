@@ -231,7 +231,7 @@ class PlannerCoreTests(unittest.TestCase):
             load_forecast_by_period_kwh=[0.2, 0.2],
             price_values=[4.0, 12.0],
             price_horizon_start=now,
-            battery_soc_pct=50.0,
+            battery_soc_pct=22.0,
             now=now,
         )
 
@@ -255,6 +255,23 @@ class PlannerCoreTests(unittest.TestCase):
         result = plan_solis_schedule(inputs)
 
         self.assertEqual("hold", result.forecast_periods[0].planned_action)
+        self.assertEqual("self_use", result.forecast_periods[1].planned_action)
+
+    def test_borderline_night_spread_can_still_charge_for_morning_peak(self) -> None:
+        now = dt("2026-03-24T00:00:00")
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.0, 0.0],
+            load_forecast_by_period_kwh=[0.0, 0.095],
+            price_values=[3.86, 8.45],
+            price_horizon_start=now,
+            battery_soc_pct=19.0,
+            now=now,
+        )
+
+        result = plan_solis_schedule(inputs)
+
+        self.assertEqual("charge", result.forecast_periods[0].planned_action)
         self.assertEqual("self_use", result.forecast_periods[1].planned_action)
 
     def test_zero_length_enabled_slot_is_not_treated_as_live_charge(self) -> None:
