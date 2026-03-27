@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from custom_components.solis_planner.bridge import plan_schedule_payload
+from custom_components.solis_planner.const import DOMAIN as SOLIS_PLANNER_DOMAIN
 from custom_components.solis_planner.planner.core import (
     PeriodDecision,
     PeriodPrice,
@@ -35,6 +37,7 @@ from custom_components.solis_planner.runtime_sources import (
     power_rows_to_hourly_kwh,
     solar_series_from_wh_period,
 )
+from custom_components.solis_planner.writer import apply_schedule_payload
 from custom_components.solis_planner.solar_bias import (
     SOLAR_BIAS_MAX_FACTOR,
     apply_solar_bias_correction,
@@ -79,6 +82,94 @@ def build_compact_hourly_usage_profile(default_kwh_per_hour: float = 0.6) -> str
     for index in range(6, 10):
         values[index] = 1.4
     return ",".join(f"{value:.3f}" for value in values)
+
+
+class FakeState:
+    def __init__(self, state: str) -> None:
+        self.state = state
+
+
+class FakeStates:
+    def __init__(self, initial: dict[str, str]) -> None:
+        self._states = {entity_id: FakeState(state) for entity_id, state in initial.items()}
+
+    def get(self, entity_id: str) -> FakeState | None:
+        return self._states.get(entity_id)
+
+    def async_entity_ids(self, domain_filter: str | None = None) -> list[str]:
+        if domain_filter is None:
+            return list(self._states.keys())
+        return [
+            entity_id
+            for entity_id in self._states
+            if entity_id.startswith(f"{domain_filter}.")
+        ]
+
+    def set(self, entity_id: str, state: str) -> None:
+        self._states[entity_id] = FakeState(state)
+
+
+class FakeServices:
+    def __init__(self, states: FakeStates) -> None:
+        self._states = states
+        self.calls: list[tuple[str, str, str | None, dict[str, object] | None]] = []
+
+    async def async_call(
+        self,
+        domain: str,
+        service: str,
+        service_data: dict[str, object] | None = None,
+        blocking: bool = False,
+        return_response: bool = False,
+    ) -> None:
+        entity_id = None if service_data is None else service_data.get("entity_id")  # type: ignore[assignment]
+        self.calls.append((domain, service, entity_id, service_data))
+        if domain == "text" and service == "set_value":
+            assert service_data is not None
+            self._states.set(str(service_data["entity_id"]), str(service_data["value"]))
+            return
+        if domain == "number" and service == "set_value":
+            assert service_data is not None
+            self._states.set(str(service_data["entity_id"]), f"{float(service_data['value']):.1f}")
+            return
+        if domain == "switch" and service == "turn_on":
+            assert service_data is not None
+            self._states.set(str(service_data["entity_id"]), "on")
+            return
+        if domain == "switch" and service == "turn_off":
+            assert service_data is not None
+            self._states.set(str(service_data["entity_id"]), "off")
+            return
+        if domain == "input_text" and service == "set_value":
+            assert service_data is not None
+            self._states.set(str(service_data["entity_id"]), str(service_data["value"]))
+            return
+        raise AssertionError(f"Unexpected service call: {domain}.{service}")
+
+
+class FakeHass:
+    def __init__(self, initial_states: dict[str, str]) -> None:
+        self.states = FakeStates(initial_states)
+        self.services = FakeServices(self.states)
+        self.data = {SOLIS_PLANNER_DOMAIN: {}}
+
+
+def build_slot_entities() -> dict[str, str]:
+    prefix = "inverter_control_110ca2228060121"
+    states: dict[str, str] = {
+        "input_text.solis_slot_planner_status": "idle",
+        "input_text.solis_slot_planner_schedule": "idle",
+    }
+    for slot in range(1, 7):
+        states[f"switch.{prefix}_slot{slot}_charge"] = "off"
+        states[f"text.{prefix}_slot{slot}_charge_time"] = "00:00-00:00"
+        states[f"number.{prefix}_slot{slot}_charge_current"] = "0.0"
+        states[f"number.{prefix}_slot{slot}_charge_soc"] = "19.0"
+        states[f"switch.{prefix}_slot{slot}_discharge"] = "off"
+        states[f"text.{prefix}_slot{slot}_discharge_time"] = "00:00-00:00"
+        states[f"number.{prefix}_slot{slot}_discharge_current"] = "0.0"
+        states[f"number.{prefix}_slot{slot}_discharge_soc"] = "19.0"
+    return states
 
 
 class PlannerCoreTests(unittest.TestCase):
@@ -1069,6 +1160,79 @@ class BridgeTests(unittest.TestCase):
         self.assertIn("forecast_periods", result)
         self.assertGreater(len(result["forecast_periods"]), 0)
         self.assertIn("planned_action", result["forecast_periods"][0])
+
+
+class ApplyScheduleWriterTests(unittest.TestCase):
+    def test_apply_schedule_writes_two_charge_slots_directly_and_verifies_readback(self) -> None:
+        hass = FakeHass(build_slot_entities())
+
+        result = asyncio.run(
+            apply_schedule_payload(
+                hass,
+                charge_slots=[
+                    {"time": "12:00-13:00", "enabled": True, "current": 8, "soc": 30},
+                    {"time": "13:00-14:00", "enabled": True, "current": 8, "soc": 30},
+                ],
+                discharge_slots=[],
+                debug_status="probe",
+                debug_summary="writer test",
+            )
+        )
+
+        self.assertTrue(result["verification_ok"])
+        self.assertEqual("12:00-13:00", result["charge_slots_readback"][0]["time"])
+        self.assertEqual("13:00-14:00", result["charge_slots_readback"][1]["time"])
+        self.assertEqual("probe", hass.states.get("input_text.solis_slot_planner_status").state)
+        self.assertEqual("writer test", hass.states.get("input_text.solis_slot_planner_schedule").state)
+
+    def test_apply_schedule_detects_readback_mismatch(self) -> None:
+        hass = FakeHass(build_slot_entities())
+        original_get = hass.states.get
+
+        def mismatching_get(entity_id: str) -> FakeState | None:
+            state = original_get(entity_id)
+            if entity_id == "text.inverter_control_110ca2228060121_slot2_charge_time":
+                return FakeState("00:00-00:00")
+            return state
+
+        hass.states.get = mismatching_get  # type: ignore[assignment]
+
+        result = asyncio.run(
+            apply_schedule_payload(
+                hass,
+                charge_slots=[
+                    {"time": "12:00-13:00", "enabled": True, "current": 8, "soc": 30},
+                    {"time": "13:00-14:00", "enabled": True, "current": 8, "soc": 30},
+                ],
+                discharge_slots=[],
+                debug_status="probe",
+                debug_summary="writer mismatch",
+            )
+        )
+
+        self.assertFalse(result["verification_ok"])
+        self.assertEqual("charge", result["verification_errors"][0]["side"])
+        self.assertEqual(2, result["verification_errors"][0]["slot"])
+        self.assertEqual("time", result["verification_errors"][0]["field"])
+
+    def test_apply_schedule_accepts_near_future_charge_slot(self) -> None:
+        hass = FakeHass(build_slot_entities())
+
+        result = asyncio.run(
+            apply_schedule_payload(
+                hass,
+                charge_slots=[
+                    {"time": "01:07-01:37", "enabled": True, "current": 8, "soc": 30},
+                ],
+                discharge_slots=[],
+                debug_status="probe",
+                debug_summary="near future",
+            )
+        )
+
+        self.assertTrue(result["verification_ok"])
+        self.assertEqual("01:07-01:37", result["charge_slots_readback"][0]["time"])
+        self.assertEqual("on", hass.states.get("switch.inverter_control_110ca2228060121_slot1_charge").state)
 
 
 if __name__ == "__main__":

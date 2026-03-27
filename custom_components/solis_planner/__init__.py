@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_WEATHER_ENTITY_ID,
     DOMAIN,
     PLATFORMS,
+    SERVICE_APPLY_SCHEDULE,
     SERVICE_BUILD_LOAD_FORECAST,
     SERVICE_PLAN_SCHEDULE,
     planner_update_signal,
@@ -45,6 +46,7 @@ from .solar_bias import (
     record_pending_solar_forecasts,
     reconcile_solar_bias_store,
 )
+from .writer import apply_schedule_payload
 
 type SolisPlannerConfigEntry = ConfigEntry
 
@@ -84,6 +86,33 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             SERVICE_PLAN_SCHEDULE,
             handle_plan_schedule,
+            supports_response="only",
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_APPLY_SCHEDULE):
+        async def handle_apply_schedule(call: ServiceCall) -> ServiceResponse:
+            charge_slots = call.data.get("charge_slots", [])
+            discharge_slots = call.data.get("discharge_slots", [])
+            if not isinstance(charge_slots, list) or not isinstance(discharge_slots, list):
+                raise ValueError("charge_slots and discharge_slots must be lists")
+            debug_status = str(call.data.get("debug_status") or call.data.get("status") or "")
+            debug_summary = str(call.data.get("debug_summary") or call.data.get("summary") or "")
+            verify = bool(call.data.get("verify", True))
+            write_strategy = str(call.data.get("write_strategy") or "direct_entities")
+            return await apply_schedule_payload(
+                hass,
+                charge_slots=charge_slots,
+                discharge_slots=discharge_slots,
+                debug_status=debug_status,
+                debug_summary=debug_summary,
+                verify=verify,
+                write_strategy=write_strategy,
+            )
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_APPLY_SCHEDULE,
+            handle_apply_schedule,
             supports_response="only",
         )
 

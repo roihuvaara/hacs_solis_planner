@@ -83,3 +83,46 @@ build_load_forecast:
           min: 5
           max: 60
           mode: box
+
+apply_schedule:
+  name: Apply schedule
+  description: Apply compiled charge and discharge slots directly to Solis slot entities and verify readback.
+  fields:
+    charge_slots:
+      name: Charge slots
+      description: Charge slot payload from the planner.
+      required: true
+      selector:
+        object:
+    discharge_slots:
+      name: Discharge slots
+      description: Discharge slot payload from the planner.
+      required: true
+      selector:
+        object:
+    debug_status:
+      name: Debug status
+      description: Planner status string to publish after a successful write attempt.
+      required: false
+      selector:
+        text:
+    debug_summary:
+      name: Debug summary
+      description: Planner summary string to publish after a successful write attempt.
+      required: false
+      selector:
+        text:
+    verify:
+      name: Verify
+      description: Re-read slot entities after the write and report mismatches.
+      required: false
+      default: true
+      selector:
+        boolean:
+    write_strategy:
+      name: Write strategy
+      description: Internal writer mode. Defaults to direct entity writes.
+      required: false
+      default: direct_entities
+      selector:
+        text:

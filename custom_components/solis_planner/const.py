@@ -1,6 +1,7 @@
 DOMAIN = "solis_planner"
 SERVICE_PLAN_SCHEDULE = "plan_schedule"
 SERVICE_BUILD_LOAD_FORECAST = "build_load_forecast"
+SERVICE_APPLY_SCHEDULE = "apply_schedule"
 PLATFORMS = ["sensor"]
 DATA_LATEST_PLAN = "latest_plan"
 DEFAULT_SOLAR_ACTUAL_ENTITY_ID = "sensor.solis_ac_output_total_power"
