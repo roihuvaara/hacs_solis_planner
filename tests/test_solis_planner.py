@@ -223,6 +223,40 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertGreaterEqual(result.target_soc_pct, 19)
         self.assertGreaterEqual(result.hold_soc_pct, 19)
 
+    def test_cycle_penalty_preserves_battery_through_low_value_period(self) -> None:
+        now = dt("2026-03-24T00:00:00")
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.0, 0.0],
+            load_forecast_by_period_kwh=[0.2, 0.2],
+            price_values=[4.0, 12.0],
+            price_horizon_start=now,
+            battery_soc_pct=50.0,
+            now=now,
+        )
+
+        result = plan_solis_schedule(inputs)
+
+        self.assertEqual("hold", result.forecast_periods[0].planned_action)
+        self.assertEqual("self_use", result.forecast_periods[1].planned_action)
+
+    def test_cycle_penalty_only_applies_to_battery_energy_serving_load(self) -> None:
+        now = dt("2026-03-24T00:00:00")
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.3, 0.0],
+            load_forecast_by_period_kwh=[0.2, 0.2],
+            price_values=[4.0, 12.0],
+            price_horizon_start=now,
+            battery_soc_pct=50.0,
+            now=now,
+        )
+
+        result = plan_solis_schedule(inputs)
+
+        self.assertEqual("hold", result.forecast_periods[0].planned_action)
+        self.assertEqual("self_use", result.forecast_periods[1].planned_action)
+
     def test_zero_length_enabled_slot_is_not_treated_as_live_charge(self) -> None:
         now = dt("2026-03-26T22:30:00")
         period_plan = [

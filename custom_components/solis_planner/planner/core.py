@@ -13,6 +13,7 @@ PERIOD_HOURS = 0.25
 ROUND_TRIP_EFFICIENCY = 0.9
 CHARGE_EFFICIENCY = sqrt(ROUND_TRIP_EFFICIENCY)
 DISCHARGE_EFFICIENCY = sqrt(ROUND_TRIP_EFFICIENCY)
+BATTERY_CYCLE_COST_CENTS_PER_KWH = 5.0
 SAFE_PLANNED_CHARGE_CURRENT_SETTING = 12
 MORNING_SOLAR_LOAD_OFFSET_CONFIDENCE = 0.5
 
@@ -379,6 +380,7 @@ def optimize_horizon(
             self_use_next_units = quantize_units(self_use_buffer_kwh, max_units)
             self_use_cost = (
                 max(0.0, period.net_import_without_battery_kwh - delivered_to_load_kwh) * period.price_cents_per_kwh
+                + delivered_to_load_kwh * BATTERY_CYCLE_COST_CENTS_PER_KWH
                 + dp[period_index + 1][self_use_next_units]
             )
             if (
