@@ -184,6 +184,7 @@ async def _plan_schedule_from_hass(
     weather_entity_id = str(
         planner_state.get("weather_entity_id") or DEFAULT_WEATHER_ENTITY_ID
     )
+    now = datetime.fromisoformat(str(planner_state["now"]))
     price_horizon_raw = json.loads(str(planner_state["price_horizon"]))
     target_period_starts = [
         datetime.fromisoformat(item["start_ts"])
