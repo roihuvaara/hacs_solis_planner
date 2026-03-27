@@ -748,8 +748,35 @@ def prioritize_windows(
         duration = int((end - start) / timedelta(minutes=15))
         return (live_bonus + overlaps_current, protected_value, duration)
 
-    selected = sorted(windows, key=score, reverse=True)[:max_slots]
+    selected: list[tuple[datetime, datetime, list[PeriodDecision]]] = []
+    for window in sorted(windows, key=score, reverse=True):
+        if any(windows_overlap_by_wall_clock(window, existing) for existing in selected):
+            continue
+        selected.append(window)
+        if len(selected) >= max_slots:
+            break
     return sorted(selected, key=lambda window: window[0])
+
+
+def wall_clock_ranges(start: datetime, end: datetime) -> list[tuple[int, int]]:
+    start_minute = start.hour * 60 + start.minute
+    end_minute = end.hour * 60 + end.minute
+    if end <= start or end.date() != start.date():
+        return [(start_minute, 24 * 60), (0, end_minute)]
+    return [(start_minute, end_minute)]
+
+
+def windows_overlap_by_wall_clock(
+    first: tuple[datetime, datetime, list[PeriodDecision]],
+    second: tuple[datetime, datetime, list[PeriodDecision]],
+) -> bool:
+    first_ranges = wall_clock_ranges(first[0], first[1])
+    second_ranges = wall_clock_ranges(second[0], second[1])
+    for first_start, first_end in first_ranges:
+        for second_start, second_end in second_ranges:
+            if first_start < second_end and second_start < first_end:
+                return True
+    return False
 
 
 def compile_windows_to_slots(

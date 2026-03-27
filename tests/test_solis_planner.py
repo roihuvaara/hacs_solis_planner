@@ -362,6 +362,138 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertEqual(["23:00-05:45"], [slot.time for slot in enabled_charge_slots])
         self.assertEqual(["06:00-06:15"], [slot.time for slot in enabled_discharge_slots])
 
+    def test_live_hold_slot_suppresses_nested_future_hold_windows(self) -> None:
+        now = dt("2026-03-27T22:05:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=dt("2026-03-27T22:00:00") + timedelta(minutes=15 * index),
+                strategy="hold",
+                target_soc_pct=None,
+                hold_soc_pct=28,
+                reason="preserve battery overnight",
+                priority_score=1.0,
+            )
+            for index in range(40)
+        ]
+        period_plan.extend(
+            [
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T10:00:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=62,
+                    reason="late-morning solar hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T11:00:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=82,
+                    reason="later solar hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T22:00:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=28,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T22:15:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=28,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T22:30:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=28,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T23:00:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=24,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T23:15:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=24,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T23:30:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=24,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-28T23:45:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=24,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-29T00:00:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=24,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-29T00:30:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=20,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+                PeriodDecision(
+                    start_ts=dt("2026-03-29T00:45:00"),
+                    strategy="hold",
+                    target_soc_pct=None,
+                    hold_soc_pct=20,
+                    reason="next-night hold",
+                    priority_score=5.0,
+                ),
+            ]
+        )
+
+        _, discharge_slots = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[],
+            current_discharge_slots=[
+                SolisSlot(time="20:15-07:45", enabled=True, current=0, soc=28),
+            ],
+            max_charge_current_setting=12,
+        )
+
+        enabled_discharge_slots = [slot for slot in discharge_slots if slot.enabled]
+
+        self.assertEqual(
+            ["20:15-07:45", "10:00-10:15", "11:00-11:15"],
+            [slot.time for slot in enabled_discharge_slots],
+        )
+        self.assertEqual(3, len(enabled_discharge_slots))
+
     def test_future_charge_windows_do_not_inherit_live_slot_current(self) -> None:
         now = dt("2026-03-26T23:30:00")
         period_plan = [
