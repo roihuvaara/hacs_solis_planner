@@ -38,6 +38,24 @@ def power_rows_to_usage_samples(
     return samples
 
 
+def power_rows_to_hourly_kwh(
+    rows: list[dict[str, Any]],
+    *,
+    tzinfo: Any,
+    sample_minutes: int = 5,
+) -> dict[datetime, float]:
+    period_hours = sample_minutes / 60.0
+    hourly: dict[datetime, float] = {}
+    for row in rows:
+        mean_watts = row.get("mean")
+        if mean_watts is None:
+            continue
+        start_ts = _coerce_stat_start(row["start"], tzinfo)
+        hour_start = start_ts.replace(minute=0, second=0, microsecond=0)
+        hourly[hour_start] = hourly.get(hour_start, 0.0) + max(0.0, float(mean_watts) * period_hours / 1000.0)
+    return {hour: round(value, 4) for hour, value in hourly.items()}
+
+
 def solar_series_from_wh_period(
     *,
     target_period_starts: list[datetime],

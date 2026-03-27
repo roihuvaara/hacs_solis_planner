@@ -21,6 +21,8 @@ except ModuleNotFoundError:  # pragma: no cover - local unit tests run without H
 from .bridge import build_load_forecast_payload, forecast_result_to_payload, plan_schedule_payload
 from .const import (
     DATA_LATEST_PLAN,
+    DEFAULT_SOLAR_ACTUAL_ENTITY_ID,
+    DEFAULT_WEATHER_ENTITY_ID,
     DOMAIN,
     PLATFORMS,
     SERVICE_BUILD_LOAD_FORECAST,
@@ -31,7 +33,17 @@ from .planner.forecast import TemperatureSample, build_load_forecast_for_periods
 from .planner.usage import UsageSample
 from .runtime_sources import (
     async_build_solar_forecast_series,
+    power_rows_to_hourly_kwh,
     power_rows_to_usage_samples,
+)
+from .solar_bias import (
+    apply_solar_bias_correction,
+    async_load_solar_bias_store,
+    async_save_solar_bias_store,
+    normalize_weather_condition,
+    period_series_to_hourly_kwh,
+    record_pending_solar_forecasts,
+    reconcile_solar_bias_store,
 )
 
 type SolisPlannerConfigEntry = ConfigEntry
@@ -166,6 +178,12 @@ async def _plan_schedule_from_hass(
     planner_state: dict[str, Any],
 ) -> ServiceResponse:
     solar_source_entity_id = planner_state.get("solar_source_entity_id")
+    solar_actual_entity_id = str(
+        planner_state.get("solar_actual_entity_id") or DEFAULT_SOLAR_ACTUAL_ENTITY_ID
+    )
+    weather_entity_id = str(
+        planner_state.get("weather_entity_id") or DEFAULT_WEATHER_ENTITY_ID
+    )
     price_horizon_raw = json.loads(str(planner_state["price_horizon"]))
     target_period_starts = [
         datetime.fromisoformat(item["start_ts"])
@@ -173,6 +191,14 @@ async def _plan_schedule_from_hass(
     ]
 
     solar_source_mode = "explicit_series" if planner_state.get("solar_forecast_by_period_kwh") else "daily_total_fallback"
+    solar_bias_summary: dict[str, Any] = {
+        "applied": False,
+        "source_counts": {},
+        "pending_forecast_hours": 0,
+        "last_reconciled_hour": None,
+        "week_bias_active": False,
+    }
+    solar_period_debug: list[dict[str, Any]] = []
     if not planner_state.get("solar_forecast_by_period_kwh") and solar_source_entity_id:
         solar_series, solar_source_mode = await async_build_solar_forecast_series(
             hass,
@@ -180,12 +206,71 @@ async def _plan_schedule_from_hass(
             target_period_starts=target_period_starts,
         )
         if solar_series:
-            planner_state["solar_forecast_by_period_kwh"] = json.dumps(solar_series)
+            corrected_series = solar_series
+            try:
+                hourly_weather_buckets = await _async_fetch_weather_forecast_condition_buckets(
+                    hass,
+                    entity_id=weather_entity_id,
+                    target_period_starts=target_period_starts,
+                )
+                solar_bias_store = await async_load_solar_bias_store(hass)
+                raw_hourly_kwh = period_series_to_hourly_kwh(
+                    target_period_starts=target_period_starts,
+                    values_kwh=solar_series,
+                )
+                reconcile_changed = reconcile_solar_bias_store(
+                    solar_bias_store,
+                    now=now,
+                    actual_hourly_kwh=await _async_fetch_actual_solar_hourly_kwh(
+                        hass,
+                        entity_id=solar_actual_entity_id,
+                        end_time=now,
+                        lookback_days=14,
+                    ),
+                )
+                recorded_changed = record_pending_solar_forecasts(
+                    solar_bias_store,
+                    captured_at=now,
+                    hourly_forecast_kwh=raw_hourly_kwh,
+                    hourly_weather_buckets=hourly_weather_buckets,
+                )
+                corrected_series, solar_period_debug, solar_bias_summary = apply_solar_bias_correction(
+                    solar_bias_store,
+                    now=now,
+                    target_period_starts=target_period_starts,
+                    raw_series_kwh=solar_series,
+                    hourly_weather_buckets=hourly_weather_buckets,
+                )
+                solar_bias_summary.update(
+                    {
+                        "applied": True,
+                        "solar_actual_entity_id": solar_actual_entity_id,
+                        "weather_entity_id": weather_entity_id,
+                    }
+                )
+                if reconcile_changed or recorded_changed:
+                    await async_save_solar_bias_store(hass, solar_bias_store)
+            except Exception as err:  # pragma: no cover - exercised only in HA runtime.
+                solar_bias_summary = {
+                    "applied": False,
+                    "error": str(err),
+                    "source_counts": {},
+                    "pending_forecast_hours": 0,
+                    "last_reconciled_hour": None,
+                    "week_bias_active": False,
+                }
+            planner_state["solar_forecast_by_period_kwh"] = json.dumps(corrected_series)
 
     response = plan_schedule_payload(planner_state)
     response["solar_source_mode"] = solar_source_mode
     if solar_source_entity_id:
         response["solar_source_entity_id"] = str(solar_source_entity_id)
+    response["solar_bias_summary"] = solar_bias_summary
+    response["solar_actual_entity_id"] = solar_actual_entity_id
+    response["weather_entity_id"] = weather_entity_id
+    if solar_period_debug and response.get("forecast_periods"):
+        for period_payload, debug_payload in zip(response["forecast_periods"], solar_period_debug):
+            period_payload.update(debug_payload)
     return response
 
 
@@ -356,6 +441,63 @@ async def _async_fetch_weather_forecast_samples(
                 )
             )
     return samples
+
+
+async def _async_fetch_weather_forecast_condition_buckets(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    target_period_starts: list[datetime],
+) -> dict[datetime, str]:
+    response = await hass.services.async_call(
+        "weather",
+        "get_forecasts",
+        {"entity_id": [entity_id], "type": "hourly"},
+        blocking=True,
+        return_response=True,
+    )
+    forecast_rows = response.get(entity_id, {}).get("forecast", []) if isinstance(response, Mapping) else []
+    hourly_conditions = {
+        datetime.fromisoformat(item["datetime"]).replace(minute=0, second=0, microsecond=0): normalize_weather_condition(
+            str(item.get("condition")) if item.get("condition") is not None else None
+        )
+        for item in forecast_rows
+        if item.get("datetime")
+    }
+    return {
+        period_start.replace(minute=0, second=0, microsecond=0): hourly_conditions.get(
+            period_start.replace(minute=0, second=0, microsecond=0),
+            "other",
+        )
+        for period_start in target_period_starts
+    }
+
+
+async def _async_fetch_actual_solar_hourly_kwh(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    end_time: datetime,
+    lookback_days: int,
+) -> dict[datetime, float]:
+    try:
+        from homeassistant.components.recorder.statistics import statistics_during_period
+    except ModuleNotFoundError as err:  # pragma: no cover - only available in HA runtime
+        raise RuntimeError("Recorder statistics are unavailable in this environment") from err
+
+    start_time = end_time - timedelta(days=lookback_days)
+    response = await hass.async_add_executor_job(
+        statistics_during_period,
+        hass,
+        start_time,
+        end_time,
+        {entity_id},
+        "5minute",
+        None,
+        {"mean"},
+    )
+    rows = response.get(entity_id, [])
+    return power_rows_to_hourly_kwh(rows, tzinfo=end_time.tzinfo)
 
 
 def _coerce_stat_start(value: Any, tzinfo: Any) -> datetime:

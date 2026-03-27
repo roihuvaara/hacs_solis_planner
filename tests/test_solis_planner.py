@@ -32,7 +32,18 @@ from custom_components.solis_planner.planner.usage import (
 )
 from custom_components.solis_planner.runtime_sources import (
     power_rows_to_usage_samples,
+    power_rows_to_hourly_kwh,
     solar_series_from_wh_period,
+)
+from custom_components.solis_planner.solar_bias import (
+    SOLAR_BIAS_MAX_FACTOR,
+    apply_solar_bias_correction,
+    empty_solar_bias_store,
+    normalize_weather_condition,
+    period_series_to_hourly_kwh,
+    record_pending_solar_forecasts,
+    reconcile_solar_bias_store,
+    select_solar_bias_factor,
 )
 
 
@@ -576,6 +587,18 @@ class RuntimeSourceTests(unittest.TestCase):
         self.assertAlmostEqual(0.4, samples[0].kwh)
         self.assertAlmostEqual(0.45, samples[1].kwh)
 
+    def test_power_rows_to_hourly_kwh_groups_five_minute_rows(self) -> None:
+        rows = [
+            {"start": "2026-03-25T06:00:00+02:00", "mean": 4800.0},
+            {"start": "2026-03-25T06:05:00+02:00", "mean": 5400.0},
+            {"start": "2026-03-25T07:00:00+02:00", "mean": 6000.0},
+        ]
+
+        hourly = power_rows_to_hourly_kwh(rows, tzinfo=TZ)
+
+        self.assertAlmostEqual(0.85, hourly[dt("2026-03-25T06:00:00")])
+        self.assertAlmostEqual(0.5, hourly[dt("2026-03-25T07:00:00")])
+
     def test_solar_series_from_hourly_wh_period_distributes_across_quarters(self) -> None:
         starts = [
             dt("2026-03-27T08:00:00"),
@@ -614,6 +637,157 @@ class RuntimeSourceTests(unittest.TestCase):
         )
 
         self.assertEqual([0.1, 0.2, 0.3, 0.4], values)
+
+
+class SolarBiasTests(unittest.TestCase):
+    def test_normalize_weather_condition_maps_known_conditions(self) -> None:
+        self.assertEqual("fog", normalize_weather_condition("fog"))
+        self.assertEqual("partly_cloudy", normalize_weather_condition("partlycloudy"))
+        self.assertEqual("cloudy", normalize_weather_condition("overcast"))
+        self.assertEqual("other", normalize_weather_condition("windy"))
+
+    def test_period_series_to_hourly_groups_quarter_hours(self) -> None:
+        starts = [
+            dt("2026-03-27T08:00:00"),
+            dt("2026-03-27T08:15:00"),
+            dt("2026-03-27T08:30:00"),
+            dt("2026-03-27T08:45:00"),
+            dt("2026-03-27T09:00:00"),
+        ]
+
+        hourly = period_series_to_hourly_kwh(
+            target_period_starts=starts,
+            values_kwh=[0.1, 0.2, 0.3, 0.4, 0.5],
+        )
+
+        self.assertEqual(1.0, hourly[dt("2026-03-27T08:00:00")])
+        self.assertEqual(0.5, hourly[dt("2026-03-27T09:00:00")])
+
+    def test_month_bucket_applies_after_five_observations(self) -> None:
+        data = empty_solar_bias_store()
+        hour_start = dt("2026-03-01T08:00:00")
+
+        for offset in range(5):
+            observation_hour = hour_start + timedelta(days=offset)
+            record_pending_solar_forecasts(
+                data,
+                captured_at=observation_hour - timedelta(hours=1),
+                hourly_forecast_kwh={observation_hour: 1.0},
+                hourly_weather_buckets={observation_hour: "fog"},
+            )
+        reconcile_solar_bias_store(
+            data,
+            now=dt("2026-03-10T00:00:00"),
+            actual_hourly_kwh={
+                dt("2026-03-01T08:00:00"): 0.5,
+                dt("2026-03-02T08:00:00"): 0.5,
+                dt("2026-03-03T08:00:00"): 0.5,
+                dt("2026-03-04T08:00:00"): 0.5,
+                dt("2026-03-05T08:00:00"): 0.5,
+            },
+        )
+
+        factor, source, observations = select_solar_bias_factor(
+            data,
+            now=dt("2026-03-10T00:00:00"),
+            hour_start=dt("2026-03-10T08:00:00"),
+            weather_bucket="fog",
+        )
+
+        self.assertEqual("weather_month_hour", source)
+        self.assertEqual(5, observations)
+        self.assertAlmostEqual(0.5, factor)
+
+    def test_week_bucket_falls_back_to_month_until_exact_week_has_enough_samples(self) -> None:
+        data = empty_solar_bias_store()
+        first_hour = dt("2025-03-03T08:00:00")
+
+        for offset in range(20):
+            observation_hour = first_hour + timedelta(days=7 * offset)
+            record_pending_solar_forecasts(
+                data,
+                captured_at=observation_hour - timedelta(hours=1),
+                hourly_forecast_kwh={observation_hour: 1.0},
+                hourly_weather_buckets={observation_hour: "cloudy"},
+            )
+        reconcile_solar_bias_store(
+            data,
+            now=dt("2026-08-01T00:00:00"),
+            actual_hourly_kwh={
+                first_hour + timedelta(days=7 * offset): 0.6
+                for offset in range(20)
+            },
+        )
+
+        factor, source, observations = select_solar_bias_factor(
+            data,
+            now=dt("2026-08-01T00:00:00"),
+            hour_start=dt("2026-03-30T08:00:00"),
+            weather_bucket="cloudy",
+        )
+
+        self.assertEqual("weather_month_hour", source)
+        self.assertGreaterEqual(observations, 5)
+        self.assertAlmostEqual(0.6, factor)
+
+    def test_week_bucket_activates_after_multi_year_same_week_samples(self) -> None:
+        data = empty_solar_bias_store()
+        data["first_observation_at"] = dt("2025-03-03T08:00:00").isoformat()
+        data["stats"]["weather_week_hour"]["cloudy|10|08"] = {
+            "observations": 21,
+            "forecast_sum_kwh": 21.0,
+            "actual_sum_kwh": 12.6,
+            "delta_sum_kwh": -8.4,
+        }
+        data["stats"]["weather_month_hour"]["cloudy|03|08"] = {
+            "observations": 21,
+            "forecast_sum_kwh": 21.0,
+            "actual_sum_kwh": 15.75,
+            "delta_sum_kwh": -5.25,
+        }
+
+        factor, source, observations = select_solar_bias_factor(
+            data,
+            now=dt("2027-08-01T00:00:00"),
+            hour_start=dt("2027-03-08T08:00:00"),
+            weather_bucket="cloudy",
+        )
+
+        self.assertEqual("weather_week_hour", source)
+        self.assertEqual(21, observations)
+        self.assertAlmostEqual(0.6, factor)
+
+    def test_applied_factor_is_capped_to_maximum(self) -> None:
+        data = empty_solar_bias_store()
+        observation_hour = dt("2025-03-03T09:00:00")
+
+        for offset in range(5):
+            hour = observation_hour + timedelta(days=offset)
+            record_pending_solar_forecasts(
+                data,
+                captured_at=hour - timedelta(hours=1),
+                hourly_forecast_kwh={hour: 1.0},
+                hourly_weather_buckets={hour: "clear"},
+            )
+        reconcile_solar_bias_store(
+            data,
+            now=dt("2026-03-30T00:00:00"),
+            actual_hourly_kwh={
+                observation_hour + timedelta(days=offset): 2.0
+                for offset in range(5)
+            },
+        )
+
+        corrected, period_debug, _ = apply_solar_bias_correction(
+            data,
+            now=dt("2026-03-30T00:00:00"),
+            target_period_starts=[dt("2026-03-30T09:00:00")],
+            raw_series_kwh=[1.0],
+            hourly_weather_buckets={dt("2026-03-30T09:00:00"): "clear"},
+        )
+
+        self.assertEqual(SOLAR_BIAS_MAX_FACTOR, period_debug[0]["solar_correction_factor"])
+        self.assertEqual(1.1, corrected[0])
 
 
 class BridgeTests(unittest.TestCase):
