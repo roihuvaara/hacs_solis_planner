@@ -113,7 +113,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             SERVICE_APPLY_SCHEDULE,
             handle_apply_schedule,
-            supports_response="only",
+            supports_response="optional",
         )
 
     if hass.services.has_service(DOMAIN, SERVICE_BUILD_LOAD_FORECAST):

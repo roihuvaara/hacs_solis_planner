@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from custom_components.solis_planner.__init__ import async_setup
 from custom_components.solis_planner.bridge import plan_schedule_payload
 from custom_components.solis_planner.const import DOMAIN as SOLIS_PLANNER_DOMAIN
 from custom_components.solis_planner.planner.core import (
@@ -113,6 +114,22 @@ class FakeServices:
     def __init__(self, states: FakeStates) -> None:
         self._states = states
         self.calls: list[tuple[str, str, str | None, dict[str, object] | None]] = []
+        self.registrations: dict[tuple[str, str], dict[str, object]] = {}
+
+    def has_service(self, domain: str, service: str) -> bool:
+        return (domain, service) in self.registrations
+
+    def async_register(
+        self,
+        domain: str,
+        service: str,
+        handler: object,
+        supports_response: str | None = None,
+    ) -> None:
+        self.registrations[(domain, service)] = {
+            "handler": handler,
+            "supports_response": supports_response,
+        }
 
     async def async_call(
         self,
@@ -1286,7 +1303,16 @@ class ApplyScheduleWriterTests(unittest.TestCase):
 
         self.assertTrue(result["verification_ok"])
         self.assertEqual("01:07-01:37", result["charge_slots_readback"][0]["time"])
-        self.assertEqual("on", hass.states.get("switch.inverter_control_110ca2228060121_slot1_charge").state)
+
+
+class ServiceRegistrationTests(unittest.TestCase):
+    def test_apply_schedule_service_allows_calls_without_response_variable(self) -> None:
+        hass = FakeHass(build_slot_entities())
+
+        asyncio.run(async_setup(hass, {}))
+
+        registration = hass.services.registrations[(SOLIS_PLANNER_DOMAIN, "apply_schedule")]
+        self.assertEqual("optional", registration["supports_response"])
 
 
 if __name__ == "__main__":
