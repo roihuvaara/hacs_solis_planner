@@ -506,20 +506,11 @@ def build_forecast_from_policy(
         return []
 
     max_units = len(policy[0]) - 1 if policy else quantize_units(max_buffer_kwh(inputs), 1)
-    current_period = floor_to_period(inputs.now)
-    live_strategy, live_soc = detect_live_strategy(inputs, current_period)
     state_units = current_units
     forecast_periods: list[ForecastPeriod] = []
 
     for period_index, period in enumerate(periods):
         planned_action, desired_next_units = policy[period_index][state_units]
-        if period_index == 0 and live_strategy in {"charge", "hold"} and live_strategy != planned_action:
-            planned_action = live_strategy  # type: ignore[assignment]
-            if live_strategy == "charge" and live_soc is not None:
-                live_units = quantize_units(buffer_kwh_from_soc_pct(inputs, live_soc), max_units)
-                desired_next_units = max(desired_next_units, live_units)
-            else:
-                desired_next_units = state_units
 
         forecast_period, state_units = simulate_period(
             inputs=inputs,
@@ -736,17 +727,15 @@ def prioritize_windows(
     windows: list[tuple[datetime, datetime, list[PeriodDecision]]],
     now: datetime,
     max_slots: int,
-    live_strategy: str,
 ) -> list[tuple[datetime, datetime, list[PeriodDecision]]]:
     current_period = floor_to_period(now)
 
     def score(window: tuple[datetime, datetime, list[PeriodDecision]]) -> tuple[int, float, int]:
         start, end, decisions = window
         overlaps_current = int(start <= current_period < end)
-        live_bonus = 1 if overlaps_current and decisions[0].strategy == live_strategy else 0
         protected_value = sum(decision.priority_score for decision in decisions)
         duration = int((end - start) / timedelta(minutes=15))
-        return (live_bonus + overlaps_current, protected_value, duration)
+        return (overlaps_current, protected_value, duration)
 
     selected: list[tuple[datetime, datetime, list[PeriodDecision]]] = []
     for window in sorted(windows, key=score, reverse=True):
@@ -785,20 +774,13 @@ def compile_windows_to_slots(
     *,
     is_charge: bool,
     default_current: int,
-    live_slot: SolisSlot | None,
-    now: datetime,
 ) -> list[SolisSlot]:
     slots: list[SolisSlot] = []
-    current_period = floor_to_period(now)
     for start, end, decisions in windows:
         slot_start = start
         slot_end = end
-        slot_current = default_current if is_charge else 0
-        if live_slot and slot_overlaps_period(live_slot, current_period) and start <= current_period < end:
-            slot_start, slot_end = slot_time_range(live_slot, now)
-            if is_charge and live_slot.current > 0:
-                slot_current = live_slot.current
-        elif is_charge:
+        slot_current = 0
+        if is_charge:
             slot_current = minimum_charge_current_for_window(decisions, default_current)
         soc = max(
             decision.target_soc_pct or decision.hold_soc_pct or DISABLED_SLOT["soc"]
@@ -818,36 +800,6 @@ def compile_windows_to_slots(
     return slots
 
 
-def trim_windows_for_live_slot(
-    windows: list[tuple[datetime, datetime, list[PeriodDecision]]],
-    *,
-    now: datetime,
-    live_slot: SolisSlot | None,
-    keep_current_window: bool,
-) -> list[tuple[datetime, datetime, list[PeriodDecision]]]:
-    if live_slot is None:
-        return windows
-
-    current_period = floor_to_period(now)
-    live_start, live_end = slot_time_range(live_slot, now)
-    trimmed_windows: list[tuple[datetime, datetime, list[PeriodDecision]]] = []
-    current_window_kept = False
-
-    for window in windows:
-        start, end, decisions = window
-        overlaps_live_slot = start < live_end and end > live_start
-        contains_current = start <= current_period < end
-
-        if not overlaps_live_slot:
-            trimmed_windows.append(window)
-            continue
-        if keep_current_window and contains_current and not current_window_kept:
-            trimmed_windows.append((start, end, decisions))
-            current_window_kept = True
-
-    return trimmed_windows
-
-
 def compile_periods_to_solis_slots(
     now: datetime,
     period_plan: list[PeriodDecision],
@@ -856,64 +808,28 @@ def compile_periods_to_solis_slots(
     max_charge_current_setting: int,
     max_slots: int = 6,
 ) -> tuple[list[SolisSlot], list[SolisSlot]]:
-    current_period = floor_to_period(now)
-    live_strategy, live_slot = live_strategy_from_slots(now, current_charge_slots, current_discharge_slots)
-    normalized_plan: list[PeriodDecision] = []
-
-    for decision in sorted(period_plan, key=lambda item: item.start_ts):
-        if decision.start_ts == current_period and live_strategy != decision.strategy:
-            normalized_plan.append(
-                PeriodDecision(
-                    start_ts=decision.start_ts,
-                    strategy=live_strategy,  # type: ignore[arg-type]
-                    target_soc_pct=live_slot.soc if live_strategy == "charge" and live_slot else decision.target_soc_pct,
-                    hold_soc_pct=live_slot.soc if live_strategy == "hold" and live_slot else decision.hold_soc_pct,
-                    reason=decision.reason,
-                    planned_charge_kwh=decision.planned_charge_kwh,
-                    priority_score=decision.priority_score,
-                )
-            )
-            continue
-        normalized_plan.append(decision)
+    normalized_plan = sorted(period_plan, key=lambda item: item.start_ts)
 
     charge_windows = prioritize_windows(
         contiguous_windows(normalized_plan, "charge"),
         now,
         max_slots,
-        live_strategy,
-    )
-    charge_windows = trim_windows_for_live_slot(
-        charge_windows,
-        now=now,
-        live_slot=live_slot,
-        keep_current_window=live_strategy == "charge",
     )
     hold_windows = prioritize_windows(
         contiguous_windows(normalized_plan, "hold"),
         now,
         max_slots,
-        live_strategy,
-    )
-    hold_windows = trim_windows_for_live_slot(
-        hold_windows,
-        now=now,
-        live_slot=live_slot,
-        keep_current_window=live_strategy == "hold",
     )
     charge_slots = compile_windows_to_slots(
         charge_windows,
         max_slots,
         is_charge=True,
         default_current=max_charge_current_setting,
-        live_slot=live_slot if live_strategy == "charge" else None,
-        now=now,
     )
     discharge_slots = compile_windows_to_slots(
         hold_windows,
         max_slots,
         is_charge=False,
         default_current=0,
-        live_slot=live_slot if live_strategy == "hold" else None,
-        now=now,
     )
     return charge_slots, discharge_slots

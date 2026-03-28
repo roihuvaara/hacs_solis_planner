@@ -376,6 +376,25 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertEqual("charge", result.forecast_periods[0].planned_action)
         self.assertEqual("self_use", result.forecast_periods[1].planned_action)
 
+    def test_live_charge_slot_does_not_override_first_forecast_period(self) -> None:
+        now = dt("2026-03-24T00:00:00")
+        inputs = self.make_inputs(
+            solar_forecast_tomorrow_kwh=0.0,
+            solar_forecast_by_period_kwh=[0.0, 0.0],
+            load_forecast_by_period_kwh=[0.2, 0.2],
+            price_values=[4.0, 12.0],
+            price_horizon_start=now,
+            battery_soc_pct=22.0,
+            now=now,
+            current_charge_slots=[
+                SolisSlot(time="00:00-00:15", enabled=True, current=2, soc=30),
+            ],
+        )
+
+        result = plan_solis_schedule(inputs)
+
+        self.assertEqual("hold", result.forecast_periods[0].planned_action)
+
     def test_zero_length_enabled_slot_is_not_treated_as_live_charge(self) -> None:
         now = dt("2026-03-26T22:30:00")
         period_plan = [
@@ -404,7 +423,42 @@ class PlannerCoreTests(unittest.TestCase):
         self.assertFalse(any(slot.enabled for slot in charge_slots))
         self.assertEqual("05:45-08:00", discharge_slots[0].time)
 
-    def test_live_charge_slot_suppresses_overlapping_future_windows(self) -> None:
+    def test_live_charge_slot_does_not_pin_compiled_charge_window(self) -> None:
+        now = dt("2026-03-26T23:30:00")
+        period_plan = [
+            PeriodDecision(
+                start_ts=now,
+                strategy="charge",
+                target_soc_pct=19,
+                hold_soc_pct=None,
+                reason="charge now",
+                planned_charge_kwh=0.1,
+            ),
+            PeriodDecision(
+                start_ts=dt("2026-03-27T04:15:00"),
+                strategy="charge",
+                target_soc_pct=32,
+                hold_soc_pct=None,
+                reason="future top-up",
+                planned_charge_kwh=0.1,
+            ),
+        ]
+
+        charge_slots, _ = compile_periods_to_solis_slots(
+            now=now,
+            period_plan=period_plan,
+            current_charge_slots=[
+                SolisSlot(time="23:00-01:00", enabled=True, current=25, soc=19),
+            ],
+            current_discharge_slots=[],
+            max_charge_current_setting=12,
+        )
+
+        enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
+
+        self.assertEqual(["23:30-23:45", "04:15-04:30"], [slot.time for slot in enabled_charge_slots])
+
+    def test_live_charge_slot_does_not_suppress_new_charge_and_hold_windows(self) -> None:
         now = dt("2026-03-26T23:30:00")
         period_plan = [
             PeriodDecision(
@@ -450,10 +504,10 @@ class PlannerCoreTests(unittest.TestCase):
         enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
         enabled_discharge_slots = [slot for slot in discharge_slots if slot.enabled]
 
-        self.assertEqual(["23:00-05:45"], [slot.time for slot in enabled_charge_slots])
-        self.assertEqual(["06:00-06:15"], [slot.time for slot in enabled_discharge_slots])
+        self.assertEqual(["23:30-23:45", "00:45-01:00"], [slot.time for slot in enabled_charge_slots])
+        self.assertEqual(["23:45-00:00", "06:00-06:15"], [slot.time for slot in enabled_discharge_slots])
 
-    def test_live_hold_slot_suppresses_nested_future_hold_windows(self) -> None:
+    def test_live_hold_slot_does_not_pin_overnight_hold_window(self) -> None:
         now = dt("2026-03-27T22:05:00")
         period_plan = [
             PeriodDecision(
@@ -580,12 +634,12 @@ class PlannerCoreTests(unittest.TestCase):
         enabled_discharge_slots = [slot for slot in discharge_slots if slot.enabled]
 
         self.assertEqual(
-            ["20:15-07:45", "10:00-10:15", "11:00-11:15"],
+            ["22:00-08:00", "10:00-10:15", "11:00-11:15"],
             [slot.time for slot in enabled_discharge_slots],
         )
         self.assertEqual(3, len(enabled_discharge_slots))
 
-    def test_future_charge_windows_do_not_inherit_live_slot_current(self) -> None:
+    def test_charge_windows_do_not_inherit_live_slot_time_or_current(self) -> None:
         now = dt("2026-03-26T23:30:00")
         period_plan = [
             PeriodDecision(
@@ -618,8 +672,8 @@ class PlannerCoreTests(unittest.TestCase):
 
         enabled_charge_slots = [slot for slot in charge_slots if slot.enabled]
 
-        self.assertEqual("23:00-01:00", enabled_charge_slots[0].time)
-        self.assertEqual(25, enabled_charge_slots[0].current)
+        self.assertEqual("23:30-23:45", enabled_charge_slots[0].time)
+        self.assertEqual(12, enabled_charge_slots[0].current)
         self.assertEqual("04:15-04:30", enabled_charge_slots[1].time)
         self.assertEqual(12, enabled_charge_slots[1].current)
 
