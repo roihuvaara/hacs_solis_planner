@@ -26,7 +26,7 @@ This repository is packaged as a HACS integration:
 4. Feed the returned slots into a thin apply script that writes Solis entities.
 
 Installation notes are in
-[docs/installation.md](/home/jukka/work/hacs_solis_planner/docs/installation.md).
+[docs/installation.md](docs/installation.md).
 
 ## Development
 
